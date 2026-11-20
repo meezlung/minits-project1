@@ -115,15 +115,15 @@ let bindP p k =
 
 # mapP :: (a -> b) -> Parser a -> Parser b
 let mapP f p =
-  bindP p (fn x => pureP (f x));
+  p `bindP` (fn x => pureP (f x));
 
 # thenP :: Parser a -> Parser b -> Parser b      (run p, keep q's result)
 let thenP p q =
-  bindP p (fn _ => q);
+  p `bindP` (fn _ => q);
 
 # skipAfter :: Parser a -> Parser b -> Parser a  (run p then q, keep p's result)
 let skipAfter p q =
-  bindP p (fn x => bindP q (fn _ => pureP x));
+  p `bindP` (fn x => q `bindP` (fn _ => pureP x));
 
 # orP :: Parser a -> Parser a -> Parser a
 #   Ordered choice with full backtracking: if p fails (even after
@@ -166,7 +166,7 @@ let manyP p =
 
 # someP :: Parser a -> Parser [a]           (one or more)
 let someP p =
-  bindP p (fn x => mapP (fn xs => x :: xs) (manyP p));
+  p `bindP` (fn x => mapP (fn xs => x :: xs) (manyP p));
 
 # optionP :: Parser a -> Parser (Option a)  (optional)
 let optionP p =
@@ -174,7 +174,7 @@ let optionP p =
 
 # sepBy1P :: Parser a -> Parser s -> Parser [a]   (p (sep p)*)
 let sepBy1P p sep =
-  bindP p (fn x => mapP (fn xs => x :: xs) (manyP (thenP sep p)));
+  p `bindP` (fn x => mapP (fn xs => x :: xs) (manyP (sep `thenP` p)));
 
 # sepByP :: Parser a -> Parser s -> Parser [a]    ((p (sep p)*)?)
 let sepByP p sep =
@@ -183,10 +183,10 @@ let sepByP p sep =
 # chainl1 :: Parser a -> Parser (a -> a -> a) -> Parser a
 #   p (op p)*, combined with a left fold: a - b - c = (a - b) - c.
 let chainl1 p op =
-  bindP p (fn first =>
+  p `bindP` (fn first =>
     mapP
       (fn rest => listFoldl (fn acc pr => match pr { Pair f x => f acc x; }) first rest)
-      (manyP (bindP op (fn f => mapP (fn x => Pair f x) p))));
+      (manyP (op `bindP` (fn f => mapP (fn x => Pair f x) p))));
 
 # notFollowedByP :: Parser a -> String -> Parser Unit
 #   Succeeds, consuming nothing, exactly when p fails here.
@@ -275,8 +275,8 @@ let isIdentChar c =
 
 # lineCommentP :: Parser Unit     "//" up to (not including) the line break
 let lineCommentP =
-  thenP (textP "//")
-    (thenP (manyP (satisfyP "comment text" (fn c => c != "\n"))) (pureP unit));
+  textP "//" `thenP`
+    (manyP (satisfyP "comment text" (fn c => c != "\n")) `thenP` (pureP unit));
 
 # wsP :: Parser Unit   spaces, tabs, line breaks and // comments
 let wsP =
@@ -290,7 +290,7 @@ let wsP =
 
 # lexeme :: Parser a -> Parser a   (p, then skip trailing whitespace/comments)
 let lexeme p =
-  skipAfter p wsP;
+  p `skipAfter` wsP;
 
 # symbolP :: String -> Parser String   punctuation such as ( ) { } : ; , .
 let symbolP s =
@@ -306,7 +306,7 @@ let operatorP text =
     else []
   in
     lexeme
-      (skipAfter (textP text)
+      (textP text `skipAfter`
         (notFollowedByP
           (satisfyP "operator character" (fn c => listContainsString c forbidden))
           (str_join ["'", text, "' is not a complete operator here"])));
@@ -320,14 +320,14 @@ let isReserved w =
 
 # identRawP :: Parser String   [A-Za-z_][A-Za-z0-9_]*  (no whitespace skipping)
 let identRawP =
-  bindP (satisfyP "identifier" isIdentStart) (fn c =>
+  satisfyP "identifier" isIdentStart `bindP` (fn c =>
     mapP (fn cs => str_join (c :: cs)) (manyP (satisfyP "identifier character" isIdentChar)));
 
 # keywordP :: String -> Parser String
 #   The word followed by an identifier boundary, so "letter" is not "let".
 let keywordP w =
   lexeme
-    (skipAfter (textP w)
+    (textP w `skipAfter`
       (notFollowedByP (satisfyP "identifier character" isIdentChar)
         (str_join ["expected '", w, "'"])));
 
@@ -361,14 +361,14 @@ letrec pow10 k =
 
 # numberRawP :: Parser Float     [0-9]+(\.[0-9]+)?
 let numberRawP =
-  bindP (someP (satisfyP "digit" isDigitChar)) (fn whole =>
+  someP (satisfyP "digit" isDigitChar) `bindP` (fn whole =>
     mapP
       (fn frac =>
         match frac {
           None => digitsToFloat 0.0 whole;
           Some ds => (digitsToFloat 0.0 (listAppend whole ds)) /. pow10 (listLength ds);
         })
-      (optionP (thenP (charP ".") (someP (satisfyP "digit" isDigitChar)))));
+      (optionP (charP "." `thenP` (someP (satisfyP "digit" isDigitChar)))));
 
 # numberP :: Parser Expr   (rejects literals that overflow to infinity)
 let numberP =
@@ -446,32 +446,32 @@ let primitiveTypeP =
 
 # TypeParameter ::= Identifier ":" Type
 let typeParamP ty =
-  bindP identifierP (fn name =>
-    thenP (symbolP ":") (mapP (fn t => Pair name t) ty));
+  identifierP `bindP` (fn name =>
+    symbolP ":" `thenP` (mapP (fn t => Pair name t) ty));
 
 # FunctionType ::= "(" TypeParameters? ")" "=>" Type
 let functionTypeP ty =
-  thenP (symbolP "(")
-    (bindP (sepByP (typeParamP ty) (symbolP ",")) (fn params =>
-      thenP (symbolP ")")
-        (thenP (operatorP "=>")
+  symbolP "(" `thenP`
+    (sepByP (typeParamP ty) (symbolP ",") `bindP` (fn params =>
+      symbolP ")" `thenP`
+        (operatorP "=>" `thenP`
           (mapP (fn ret => TyFun params ret) ty))));
 
 # TypeField ::= Identifier ":" Type
 let typeFieldP ty =
-  bindP identifierP (fn name =>
-    thenP (symbolP ":") (mapP (fn t => Pair name t) ty));
+  identifierP `bindP` (fn name =>
+    symbolP ":" `thenP` (mapP (fn t => Pair name t) ty));
 
 # RecordType ::= "{" (TypeField (";" TypeField)* ";"?)? "}"
 let recordTypeP ty =
-  thenP (symbolP "{")
-    (bindP
-      (orP
-        (bindP (sepBy1P (typeFieldP ty) (symbolP ";")) (fn fields =>
-          thenP (optionP (symbolP ";")) (pureP fields)))
-        (pureP []))
-      (fn fields =>
-        thenP (symbolP "}") (pureP (TyRecord fields))));
+  symbolP "{" `thenP`
+    # the fields (TypeField (";" TypeField)* ";"?), or none at all
+    (orP
+      (sepBy1P (typeFieldP ty) (symbolP ";") `bindP` (fn fields =>
+        optionP (symbolP ";") `thenP` (pureP fields)))
+      (pureP [])
+     `bindP` (fn fields =>
+        symbolP "}" `thenP` (pureP (TyRecord fields))));
 
 # typeAt / typeP: the knot for the recursive Type grammar.
 letrec typeAt inp =
@@ -495,37 +495,37 @@ let typeP =
 
 # Parameter ::= Identifier ":" Type
 let paramP =
-  bindP identifierP (fn name =>
-    thenP (symbolP ":") (mapP (fn t => Pair name t) typeP));
+  identifierP `bindP` (fn name =>
+    symbolP ":" `thenP` (mapP (fn t => Pair name t) typeP));
 
 # ArrowFunction ::= "(" Parameters? ")" ":" Type "=>" Expr
 #   A body that is a record literal must be parenthesized.
 let arrowP expr =
-  thenP (symbolP "(")
-    (bindP (sepByP paramP (symbolP ",")) (fn params =>
-      thenP (symbolP ")")
-        (thenP (symbolP ":")
-          (bindP typeP (fn ret =>
-            thenP (operatorP "=>")
-              (thenP
-                (notFollowedByP (textP "{")
-                  "an arrow body that is a record literal must be parenthesized")
+  symbolP "(" `thenP`
+    (sepByP paramP (symbolP ",") `bindP` (fn params =>
+      symbolP ")" `thenP`
+        (symbolP ":" `thenP`
+          (typeP `bindP` (fn ret =>
+            operatorP "=>" `thenP`
+              (notFollowedByP (textP "{")
+                 "an arrow body that is a record literal must be parenthesized"
+               `thenP`
                 (mapP (fn body => EFun params ret body) expr)))))));
 
 # "(" Expr ")"
 let parenP expr =
-  thenP (symbolP "(") (skipAfter expr (symbolP ")"));
+  symbolP "(" `thenP` (expr `skipAfter` (symbolP ")"));
 
 # RecordField ::= Identifier ":" Expr
 let recordFieldP expr =
-  bindP identifierP (fn name =>
-    thenP (symbolP ":") (mapP (fn e => Pair name e) expr));
+  identifierP `bindP` (fn name =>
+    symbolP ":" `thenP` (mapP (fn e => Pair name e) expr));
 
 # Record ::= "{" (RecordField ("," RecordField)*)? "}"
 let recordP expr =
-  thenP (symbolP "{")
-    (bindP (sepByP (recordFieldP expr) (symbolP ",")) (fn fields =>
-      thenP (symbolP "}") (pureP (ERecord fields))));
+  symbolP "{" `thenP`
+    (sepByP (recordFieldP expr) (symbolP ",") `bindP` (fn fields =>
+      symbolP "}" `thenP` (pureP (ERecord fields))));
 
 # Primary ::= ArrowFunction | Number | String | "true" | "false" | "null"
 #           | Identifier | "(" Expr ")" | Record
@@ -551,13 +551,13 @@ type Suffix
 
 # CallSuffix ::= "(" Arguments? ")"
 let callSuffixP expr =
-  thenP (symbolP "(")
-    (bindP (sepByP expr (symbolP ",")) (fn args =>
-      thenP (symbolP ")") (pureP (SufCall args))));
+  symbolP "(" `thenP`
+    (sepByP expr (symbolP ",") `bindP` (fn args =>
+      symbolP ")" `thenP` (pureP (SufCall args))));
 
 # FieldSuffix ::= "." Identifier
 let fieldSuffixP =
-  thenP (symbolP ".") (mapP (fn name => SufField name) identifierP);
+  symbolP "." `thenP` (mapP (fn name => SufField name) identifierP);
 
 # applySuffix :: Expr -> Suffix -> Expr
 let applySuffix e suffix =
@@ -568,18 +568,18 @@ let applySuffix e suffix =
 
 # Postfix ::= Primary (CallSuffix | FieldSuffix)*
 let postfixP expr =
-  bindP (primaryP expr) (fn base =>
+  primaryP expr `bindP` (fn base =>
     mapP (fn suffixes => listFoldl applySuffix base suffixes)
       (manyP (orP (callSuffixP expr) fieldSuffixP)));
 
 # Unary ::= ("!" | "-") Unary | Postfix
 letrec unaryP expr =
   orP
-    (bindP
-      (orP
-        (mapP (fn _ => OpNeg) (operatorP "-"))
-        (mapP (fn _ => OpNot) (operatorP "!")))
-      (fn op => mapP (fn inner => EUnary op inner) (unaryP expr)))
+    # a prefix operator, then its operand (another Unary)
+    (orP
+       (mapP (fn _ => OpNeg) (operatorP "-"))
+       (mapP (fn _ => OpNot) (operatorP "!"))
+     `bindP` (fn op => mapP (fn inner => EUnary op inner) (unaryP expr)))
     (postfixP expr);
 
 # binOpP :: String -> BinOp -> Parser (Expr -> Expr -> Expr)
@@ -615,11 +615,11 @@ let logicalOrP expr =
 #   The false branch is another Conditional, so a ? b : c ? d : e
 #   groups as a ? b : (c ? d : e).
 letrec conditionalP expr =
-  bindP (logicalOrP expr) (fn c =>
+  logicalOrP expr `bindP` (fn c =>
     orP
-      (thenP (symbolP "?")
-        (bindP expr (fn a =>
-          thenP (symbolP ":")
+      (symbolP "?" `thenP`
+        (expr `bindP` (fn a =>
+          symbolP ":" `thenP`
             (mapP (fn b => ECond c a b) (conditionalP expr)))))
       (pureP c));
 
@@ -628,8 +628,8 @@ letrec conditionalP expr =
 #   orP backtracks, so "x" is not committed unless "=" also matches.
 let assignmentP expr =
   orP
-    (bindP identifierP (fn name =>
-      thenP (operatorP "=") (mapP (fn rhs => EAssign name rhs) expr)))
+    (identifierP `bindP` (fn name =>
+      operatorP "=" `thenP` (mapP (fn rhs => EAssign name rhs) expr)))
     (conditionalP expr);
 
 # exprAt / exprP: the knot for the recursive Expr grammar.  Expr ::= Assignment
@@ -661,46 +661,46 @@ letrec stmtsLoop stmt close closeDesc inp acc =
 
 # Block ::= "{" Statement* "}"
 let blockP stmt =
-  thenP (symbolP "{")
+  symbolP "{" `thenP`
     (mapP (fn body => SBlock body)
       (Parser (fn inp => stmtsLoop stmt (symbolP "}") "'}'" inp [])));
 
 # LetStmt ::= "let" Identifier TypeAnn? "=" Expr ";"
 let letStmtP =
-  thenP (keywordP "let")
-    (bindP identifierP (fn name =>
-      bindP (optionP (thenP (symbolP ":") typeP)) (fn ann =>
-        thenP (operatorP "=")
-          (bindP exprP (fn init =>
-            thenP (symbolP ";") (pureP (SLet name ann init)))))));
+  keywordP "let" `thenP`
+    (identifierP `bindP` (fn name =>
+      optionP (symbolP ":" `thenP` typeP) `bindP` (fn ann =>
+        operatorP "=" `thenP`
+          (exprP `bindP` (fn init =>
+            symbolP ";" `thenP` (pureP (SLet name ann init)))))));
 
 # IfStmt ::= "if" "(" Expr ")" Block ("else" Block)?     (no else = else {})
 let ifStmtP stmt =
-  thenP (keywordP "if")
-    (thenP (symbolP "(")
-      (bindP exprP (fn cond =>
-        thenP (symbolP ")")
-          (bindP (blockP stmt) (fn thenBlock =>
+  keywordP "if" `thenP`
+    (symbolP "(" `thenP`
+      (exprP `bindP` (fn cond =>
+        symbolP ")" `thenP`
+          (blockP stmt `bindP` (fn thenBlock =>
             mapP
               (fn elseOpt =>
                 match elseOpt {
                   None => SIf cond thenBlock (SBlock []);
                   Some elseBlock => SIf cond thenBlock elseBlock;
                 })
-              (optionP (thenP (keywordP "else") (blockP stmt))))))));
+              (optionP (keywordP "else" `thenP` (blockP stmt))))))));
 
 # WhileStmt ::= "while" "(" Expr ")" Block
 let whileStmtP stmt =
-  thenP (keywordP "while")
-    (thenP (symbolP "(")
-      (bindP exprP (fn cond =>
-        thenP (symbolP ")")
+  keywordP "while" `thenP`
+    (symbolP "(" `thenP`
+      (exprP `bindP` (fn cond =>
+        symbolP ")" `thenP`
           (mapP (fn body => SWhile cond body) (blockP stmt)))));
 
 # ExprStmt ::= Expr ";"    A leading "{" at statement position is a block.
 let exprStmtP =
-  thenP (notFollowedByP (textP "{") "expected a statement")
-    (bindP exprP (fn e => thenP (symbolP ";") (pureP (SExpr e))));
+  notFollowedByP (textP "{") "expected a statement" `thenP`
+    (exprP `bindP` (fn e => symbolP ";" `thenP` (pureP (SExpr e))));
 
 # Statement ::= LetStmt | IfStmt | WhileStmt | Block | ExprStmt
 let statementP stmt =
@@ -720,7 +720,7 @@ let stmtP =
 
 # Program ::= Statement* EOF     (whitespace/comments allowed before and after)
 let programP =
-  thenP wsP
+  wsP `thenP`
     (mapP (fn stmts => Program stmts)
       (Parser (fn inp => stmtsLoop stmtP eofP "end of input" inp [])));
 
@@ -733,7 +733,7 @@ let parse src =
 
 # parseExpr :: String -> Result Expr ParseError   (a lone expression; for tests)
 let parseExpr src =
-  match runP (thenP wsP (skipAfter exprP eofP)) (makeInput src) {
+  match runP (wsP `thenP` (exprP `skipAfter` eofP)) (makeInput src) {
     POk e _ _ => Ok e;
     PFail e => Err e;
   };

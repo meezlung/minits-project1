@@ -121,16 +121,16 @@ Tests: `17 % 5` → 2, `-7 % 3` → -1, `5.5 % 2` → 1.5, `1 % 0` → DivisionB
 **Variations:**
 - A different operator at the *addition* level: edit `additionP` :594 instead.
 - An operator at a *new* precedence level, for example `**`, tighter than `*`: write `powerP expr` between `unaryP` and `multiplicationP` and make `multiplicationP` call it.
-  - **Right-associative**: `letrec powerP expr = bindP (unaryP expr) (fn l => orP (bindP (operatorP "**") (fn _ => mapP (fn r => EBinary OpPow l r) (powerP expr))) (pureP l));`
+  - **Right-associative**: `` letrec powerP expr = unaryP expr `bindP` (fn l => orP (operatorP "**" `bindP` (fn _ => mapP (fn r => EBinary OpPow l r) (powerP expr))) (pureP l)); ``
   - Also add `"*"` to the `forbidden` rules in `operatorP` :302 (`else if text == "*" then ["*"]`), so that `*` never matches the start of `**`.
   - KLang has no `pow` built-in. Compute it by repeated multiplication for whole-number exponents.
 
 ### B. `else if` — `elseif/` (sugar, parser only)
 
-`parser.kl:666–678`, `ifStmtP`. The function must call itself, so in HM dialects change `let ifStmtP` to `letrec ifStmtP`. Then replace the last line, `(optionP (thenP (keywordP "else") (blockP stmt))))))));`, with:
+`parser.kl:666–678`, `ifStmtP`. The function must call itself, so in HM dialects change `let ifStmtP` to `letrec ifStmtP`. Then replace the last line, `` (optionP (keywordP "else" `thenP` (blockP stmt)))))))); ``, with:
 ```
               (optionP
-                (thenP (keywordP "else")
+                (keywordP "else" `thenP`
                   (orP
                     (blockP stmt)
                     (mapP (fn nested => SBlock [nested]) (ifStmtP stmt))))))))));
@@ -150,11 +150,11 @@ Precedence: looser than `||`, tighter than `=`. Right-associative.
 2. `parser.kl:614`, just above `assignmentP`, add:
    ```
    letrec conditionalP expr =
-     bindP (logicalOrP expr) (fn c =>
+     logicalOrP expr `bindP` (fn c =>
        orP
-         (thenP (symbolP "?")
-           (bindP expr (fn a =>
-             thenP (symbolP ":")
+         (symbolP "?" `thenP`
+           (expr `bindP` (fn a =>
+             symbolP ":" `thenP`
                (mapP (fn b => ECond c a b) (conditionalP expr)))))
          (pureP c));
    ```
@@ -214,9 +214,9 @@ Precedence: looser than `||`, tighter than `=`. Right-associative.
        mapP (fn _ => None) (operatorP "=")
      ];
    ```
-3. `parser.kl:620`, in `assignmentP`, replace `thenP (operatorP "=") (mapP (fn rhs => EAssign name rhs) expr)))` with:
+3. `parser.kl:620`, in `assignmentP`, replace `` operatorP "=" `thenP` (mapP (fn rhs => EAssign name rhs) expr))) `` with:
    ```
-         bindP compoundOpP (fn opOpt =>
+         compoundOpP `bindP` (fn opOpt =>
            mapP
              (fn rhs =>
                match opOpt {
@@ -251,13 +251,13 @@ Copy the exact code from `../minits-hope-twists/func-hm/const/checker.kl` lines 
 2. `parser.kl:688`, just above `exprStmtP`:
    ```
    let forStmtP stmt =
-     thenP (keywordP "for")
-       (thenP (symbolP "(")
-         (bindP (orP letStmtP (bindP exprP (fn e => thenP (symbolP ";") (pureP (SExpr e))))) (fn init =>
-           bindP exprP (fn cond =>
-             thenP (symbolP ";")
-               (bindP exprP (fn update =>
-                 thenP (symbolP ")")
+     keywordP "for" `thenP`
+       (symbolP "(" `thenP`
+         (orP letStmtP (exprP `bindP` (fn e => symbolP ";" `thenP` (pureP (SExpr e)))) `bindP` (fn init =>
+           exprP `bindP` (fn cond =>
+             symbolP ";" `thenP`
+               (exprP `bindP` (fn update =>
+                 symbolP ")" `thenP`
                    (mapP
                      (fn body => SBlock [init, SWhile cond (SBlock [body, SExpr update])])
                      (blockP stmt))))))));
@@ -272,13 +272,13 @@ The outer `SBlock` keeps `i` out of the enclosing scope. `continue` (recipe J) w
 2. `parser.kl:688`, above `exprStmtP`:
    ```
    let doWhileStmtP stmt =
-     thenP (keywordP "do")
-       (bindP (blockP stmt) (fn body =>
-         thenP (keywordP "while")
-           (thenP (symbolP "(")
-             (bindP exprP (fn cond =>
-               thenP (symbolP ")")
-                 (thenP (symbolP ";")
+     keywordP "do" `thenP`
+       (blockP stmt `bindP` (fn body =>
+         keywordP "while" `thenP`
+           (symbolP "(" `thenP`
+             (exprP `bindP` (fn cond =>
+               symbolP ")" `thenP`
+                 (symbolP ";" `thenP`
                    (pureP (SBlock [body, SWhile cond body]))))))));
    ```
 3. `parser.kl:698`: add `    doWhileStmtP stmt,` after `whileStmtP stmt,`.
@@ -338,8 +338,8 @@ The idea: `break` returns an `Err` *signal* that carries the current store. Bloc
 1. `syntax.kl:59`: `| SWhile Expr Stmt` (drop the `;`), then add `  | SBreak` and `  | SContinue;`. In `showStmt` :179 add `SBreak => "(break)";` and `SContinue => "(continue)";`.
 2. `parser.kl:316`: add `"break", "continue"` to `reservedWords`. Above `exprStmtP`:
    ```
-   let breakStmtP = thenP (keywordP "break") (thenP (symbolP ";") (pureP SBreak));
-   let continueStmtP = thenP (keywordP "continue") (thenP (symbolP ";") (pureP SContinue));
+   let breakStmtP = keywordP "break" `thenP` (symbolP ";" `thenP` (pureP SBreak));
+   let continueStmtP = keywordP "continue" `thenP` (symbolP ";" `thenP` (pureP SContinue));
    ```
    Add `breakStmtP,` and `continueStmtP,` to `statementP` :694.
 3. `checker.kl:33`: add `| OutsideLoop String` (+ `showTypeError`: `OutsideLoop what => str_join [what, " can only appear inside a loop"];`).

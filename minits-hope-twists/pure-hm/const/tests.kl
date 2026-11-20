@@ -687,9 +687,9 @@ letrec report tests passed failed =
                    int_to_string (passed + failed), " total"]);
     Test label ok :: rest =>
       if ok then
-        bindIO (outputLnIO (str_concat "PASS  " label)) (fn _ => report rest (passed + 1) failed)
+        outputLnIO (str_concat "PASS  " label) `bindIO` (fn _ => report rest (passed + 1) failed)
       else
-        bindIO (outputLnIO (str_concat "FAIL  " label)) (fn _ => report rest passed (failed + 1));
+        outputLnIO (str_concat "FAIL  " label) `bindIO` (fn _ => report rest passed (failed + 1));
   };
 
 let main =
