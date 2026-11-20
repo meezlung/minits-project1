@@ -1,0 +1,733 @@
+# parser.kl -- parser combinators and the MiniTS grammar.
+#
+# Parsers work directly on the source text: there is no lexer. The input
+# state is the original source plus a cursor (offset, line, column), so
+# backtracking is just "run the other parser on the old Input value".
+include "syntax.kl";
+
+# =====================================================================
+# Part 1: Parser representation
+# =====================================================================
+
+# Input source length offset line column   (line and column start at 1)
+type Input
+  = Input String Int Int Int Int;
+
+# ParseError offset line column message
+type ParseError
+  = ParseError Int Int Int String;
+
+# A parser's reply. Success also carries the furthest error seen while
+# parsing (from alternatives that were tried and abandoned); it is used to
+# produce precise messages if a later step fails at the same place.
+type Reply a
+  = POk a Input ParseError
+  | PFail ParseError;
+
+# Parser a   ~   Input -> Reply a
+type Parser a
+  = Parser (Input -> Reply a);
+
+# runP :: Parser a -> Input -> Reply a
+let runP p inp =
+  match p {
+    Parser f => f inp;
+  };
+
+# makeInput :: String -> Input
+let makeInput src =
+  Input src (str_len src) 0 1 1;
+
+# inputOffset :: Input -> Int
+let inputOffset inp =
+  match inp {
+    Input _ _ off _ _ => off;
+  };
+
+# atEnd :: Input -> Bool
+let atEnd inp =
+  match inp {
+    Input _ len off _ _ => off >= len;
+  };
+
+# errorAt :: Input -> String -> ParseError
+let errorAt inp msg =
+  match inp {
+    Input _ _ off line col => ParseError off line col msg;
+  };
+
+# noError: placeholder "furthest error" that loses to every real error.
+let noError =
+  ParseError (0 - 1) 0 0 "";
+
+# errOffset :: ParseError -> Int
+let errOffset e =
+  match e {
+    ParseError off _ _ _ => off;
+  };
+
+# furthest :: ParseError -> ParseError -> ParseError
+#   Keep the error that got further into the input. On a tie keep the
+#   later one (it describes what was expected most recently).
+let furthest e1 e2 =
+  if errOffset e1 > errOffset e2 then e1 else e2;
+
+# showParseError :: ParseError -> String     e.g. "2:7: expected ';'"
+let showParseError e =
+  match e {
+    ParseError _ line col msg =>
+      str_join [int_to_string line, ":", int_to_string col, ": ", msg];
+  };
+
+# advanceInput :: Input -> String -> Input   (move past one character c)
+let advanceInput inp c =
+  match inp {
+    Input src len off line col =>
+      if c == "\n" then
+        Input src len (off + 1) (line + 1) 1
+      else
+        Input src len (off + 1) line (col + 1);
+  };
+
+# =====================================================================
+# Part 2: Reusable combinators
+# =====================================================================
+
+# pureP :: a -> Parser a          (succeed without consuming)
+let pureP x =
+  Parser (fn inp => POk x inp noError);
+
+# failP :: String -> Parser a     (fail at the current position)
+let failP msg =
+  Parser (fn inp => PFail (errorAt inp msg));
+
+# bindP :: Parser a -> (a -> Parser b) -> Parser b      (sequencing)
+let bindP p k =
+  Parser (fn inp =>
+    match runP p inp {
+      PFail e => PFail e;
+      POk x rest e1 =>
+        match runP (k x) rest {
+          PFail e2 => PFail (furthest e1 e2);
+          POk y rest2 e2 => POk y rest2 (furthest e1 e2);
+        };
+    });
+
+# mapP :: (a -> b) -> Parser a -> Parser b
+let mapP f p =
+  bindP p (fn x => pureP (f x));
+
+# thenP :: Parser a -> Parser b -> Parser b      (run p, keep q's result)
+let thenP p q =
+  bindP p (fn _ => q);
+
+# skipAfter :: Parser a -> Parser b -> Parser a  (run p then q, keep p's result)
+let skipAfter p q =
+  bindP p (fn x => bindP q (fn _ => pureP x));
+
+# orP :: Parser a -> Parser a -> Parser a
+#   Ordered choice with full backtracking: if p fails (even after
+#   consuming text), q runs on the original input.
+let orP p q =
+  Parser (fn inp =>
+    match runP p inp {
+      POk x rest e => POk x rest e;
+      PFail e1 =>
+        match runP q inp {
+          PFail e2 => PFail (furthest e1 e2);
+          POk y rest e2 => POk y rest (furthest e1 e2);
+        };
+    });
+
+# choiceP :: [Parser a] -> Parser a
+letrec choiceP ps =
+  match ps {
+    [] => failP "no alternative matched";
+    p :: [] => p;
+    p :: rest => orP p (choiceP rest);
+  };
+
+# manyLoop :: Parser a -> Input -> [a] -> ParseError -> Reply [a]
+#   Repeats p. Stops when p fails, and also when p succeeds without
+#   consuming input (so `manyP (pureP x)` cannot loop forever).
+letrec manyLoop p inp acc err =
+  match runP p inp {
+    PFail e => POk (listReverse acc) inp (furthest err e);
+    POk x rest e =>
+      if inputOffset rest == inputOffset inp then
+        POk (listReverse (x :: acc)) rest (furthest err e)
+      else
+        manyLoop p rest (x :: acc) (furthest err e);
+  };
+
+# manyP :: Parser a -> Parser [a]           (zero or more)
+let manyP p =
+  Parser (fn inp => manyLoop p inp [] noError);
+
+# someP :: Parser a -> Parser [a]           (one or more)
+let someP p =
+  bindP p (fn x => mapP (fn xs => x :: xs) (manyP p));
+
+# optionP :: Parser a -> Parser (Option a)  (optional)
+let optionP p =
+  orP (mapP (fn x => Some x) p) (pureP None);
+
+# sepBy1P :: Parser a -> Parser s -> Parser [a]   (p (sep p)*)
+let sepBy1P p sep =
+  bindP p (fn x => mapP (fn xs => x :: xs) (manyP (thenP sep p)));
+
+# sepByP :: Parser a -> Parser s -> Parser [a]    ((p (sep p)*)?)
+let sepByP p sep =
+  orP (sepBy1P p sep) (pureP []);
+
+# chainl1 :: Parser a -> Parser (a -> a -> a) -> Parser a
+#   p (op p)*, combined with a left fold: a - b - c = (a - b) - c.
+let chainl1 p op =
+  bindP p (fn first =>
+    mapP
+      (fn rest => listFoldl (fn acc pr => match pr { Pair f x => f acc x; }) first rest)
+      (manyP (bindP op (fn f => mapP (fn x => Pair f x) p))));
+
+# notFollowedByP :: Parser a -> String -> Parser Unit
+#   Succeeds, consuming nothing, exactly when p fails here.
+let notFollowedByP p msg =
+  Parser (fn inp =>
+    match runP p inp {
+      POk _ _ _ => PFail (errorAt inp msg);
+      PFail _ => POk unit inp noError;
+    });
+
+# quietP :: Parser a -> Parser a     (forget p's abandoned-alternative errors)
+let quietP p =
+  Parser (fn inp =>
+    match runP p inp {
+      POk x rest _ => POk x rest noError;
+      PFail e => PFail e;
+    });
+
+# eofP :: Parser Unit                (end-of-input check)
+let eofP =
+  Parser (fn inp =>
+    if atEnd inp then POk unit inp noError
+    else PFail (errorAt inp "expected end of input"));
+
+# =====================================================================
+# Part 3: Character and literal-text parsers
+# =====================================================================
+
+# satisfyP :: String -> (String -> Bool) -> Parser String
+#   One character satisfying pred; `desc` names it in error messages.
+let satisfyP desc pred =
+  Parser (fn inp =>
+    match inp {
+      Input src len off _ _ =>
+        if off >= len then
+          PFail (errorAt inp (str_concat "expected " desc))
+        else
+          let c = str_at src off in
+          if pred c then
+            POk c (advanceInput inp c) noError
+          else
+            PFail (errorAt inp (str_concat "expected " desc));
+    });
+
+# charP :: String -> Parser String
+let charP c =
+  satisfyP (str_join ["'", c, "'"]) (fn d => d == c);
+
+# advanceText :: Input -> String -> Input   (move past every character of s)
+let advanceText inp s =
+  letrec go i cur =
+    if i >= str_len s then cur else go (i + 1) (advanceInput cur (str_at s i))
+  in
+    go 0 inp;
+
+# textP :: String -> Parser String    (exact literal text)
+let textP s =
+  Parser (fn inp =>
+    match inp {
+      Input src len off _ _ =>
+        if off + str_len s <= len then
+          (if str_slice src off (off + str_len s) == s then
+             POk s (advanceText inp s) noError
+           else
+             PFail (errorAt inp (str_join ["expected '", s, "'"])))
+        else
+          PFail (errorAt inp (str_join ["expected '", s, "'"]));
+    });
+
+# Character classes (str_ord gives the code point).
+let isDigitChar c =
+  let o = str_ord c in (o >= 48) && (o <= 57);
+
+let isLetterChar c =
+  let o = str_ord c in ((o >= 65) && (o <= 90)) || ((o >= 97) && (o <= 122));
+
+let isIdentStart c =
+  isLetterChar c || (c == "_");
+
+let isIdentChar c =
+  isIdentStart c || isDigitChar c;
+
+# =====================================================================
+# Part 4: Whitespace, comments, and tokens
+# =====================================================================
+
+# lineCommentP :: Parser Unit     "//" up to (not including) the line break
+let lineCommentP =
+  thenP (textP "//")
+    (thenP (manyP (satisfyP "comment text" (fn c => c != "\n"))) (pureP unit));
+
+# wsP :: Parser Unit   spaces, tabs, line breaks and // comments
+let wsP =
+  quietP
+    (mapP (fn _ => unit)
+      (manyP
+        (orP
+          (mapP (fn _ => unit)
+            (satisfyP "whitespace" (fn c => (c == " ") || (c == "\t") || (c == "\n") || (c == "\r"))))
+          lineCommentP)));
+
+# lexeme :: Parser a -> Parser a   (p, then skip trailing whitespace/comments)
+let lexeme p =
+  skipAfter p wsP;
+
+# symbolP :: String -> Parser String   punctuation such as ( ) { } : ; , .
+let symbolP s =
+  lexeme (textP s);
+
+# operatorP :: String -> Parser String
+#   An operator matched with its longest spelling: e.g. "=" must not be the
+#   start of "===" or "=>", and "<" must not be the start of "<=".
+let operatorP text =
+  let forbidden =
+    if text == "=" then ["=", ">"]
+    else if (text == "<") || (text == ">") || (text == "===") || (text == "!==") || (text == "!") then ["="]
+    else []
+  in
+    lexeme
+      (skipAfter (textP text)
+        (notFollowedByP
+          (satisfyP "operator character" (fn c => listContainsString c forbidden))
+          (str_join ["'", text, "' is not a complete operator here"])));
+
+# reservedWords: cannot be identifiers, parameter names, or field names.
+let reservedWords =
+  ["let", "if", "else", "while", "true", "false", "null", "number", "boolean", "string"];
+
+let isReserved w =
+  listContainsString w reservedWords;
+
+# identRawP :: Parser String   [A-Za-z_][A-Za-z0-9_]*  (no whitespace skipping)
+let identRawP =
+  bindP (satisfyP "identifier" isIdentStart) (fn c =>
+    mapP (fn cs => str_join (c :: cs)) (manyP (satisfyP "identifier character" isIdentChar)));
+
+# keywordP :: String -> Parser String
+#   The word followed by an identifier boundary, so "letter" is not "let".
+let keywordP w =
+  lexeme
+    (skipAfter (textP w)
+      (notFollowedByP (satisfyP "identifier character" isIdentChar)
+        (str_join ["expected '", w, "'"])));
+
+# identifierP :: Parser String   an identifier that is not a reserved word
+let identifierP =
+  lexeme
+    (Parser (fn inp =>
+      match runP identRawP inp {
+        PFail e => PFail e;
+        POk name rest e =>
+          if isReserved name then
+            PFail (errorAt inp (str_join ["reserved word '", name, "' cannot be used as an identifier"]))
+          else
+            POk name rest e;
+      }));
+
+# =====================================================================
+# Part 5: Literals
+# =====================================================================
+
+# digitsToFloat :: Float -> [String] -> Float
+letrec digitsToFloat acc ds =
+  match ds {
+    [] => acc;
+    d :: rest => digitsToFloat ((acc *. 10.0) +. int_to_float (str_ord d - 48)) rest;
+  };
+
+# pow10 :: Int -> Float
+letrec pow10 k =
+  if k <= 0 then 1.0 else 10.0 *. pow10 (k - 1);
+
+# numberRawP :: Parser Float     [0-9]+(\.[0-9]+)?
+let numberRawP =
+  bindP (someP (satisfyP "digit" isDigitChar)) (fn whole =>
+    mapP
+      (fn frac =>
+        match frac {
+          None => digitsToFloat 0.0 whole;
+          Some ds => (digitsToFloat 0.0 (listAppend whole ds)) /. pow10 (listLength ds);
+        })
+      (optionP (thenP (charP ".") (someP (satisfyP "digit" isDigitChar)))));
+
+# numberP :: Parser Expr   (rejects literals that overflow to infinity)
+let numberP =
+  lexeme
+    (Parser (fn inp =>
+      match runP numberRawP inp {
+        PFail e => PFail e;
+        POk n rest e =>
+          if isFiniteFloat n then POk (ENum n) rest e
+          else PFail (errorAt inp "numeric literal does not denote a finite number");
+      }));
+
+# escapeChar :: String -> Option String   (the character after a backslash)
+let escapeChar d =
+  if d == "\"" then Some "\""
+  else if d == "\\" then Some "\\"
+  else if d == "n" then Some "\n"
+  else if d == "r" then Some "\r"
+  else if d == "t" then Some "\t"
+  else None;
+
+# stringBody :: Input -> Input -> [String] -> Reply String
+#   start is the position of the opening quote (for "unterminated" errors).
+letrec stringBody start inp acc =
+  match inp {
+    Input src len off _ _ =>
+      if off >= len then
+        PFail (errorAt start "unterminated string literal")
+      else
+        let c = str_at src off in
+        if c == "\"" then
+          POk (str_join (listReverse acc)) (advanceInput inp c) noError
+        else if (c == "\n") || (c == "\r") then
+          PFail (errorAt inp "unescaped line break in string literal")
+        else if c == "\\" then
+          (if off + 1 >= len then
+             PFail (errorAt start "unterminated string literal")
+           else
+             let d = str_at src (off + 1) in
+             match escapeChar d {
+               None =>
+                 PFail (errorAt inp (str_join ["unknown escape sequence '\\", escapeText d, "'"]));
+               Some decoded =>
+                 stringBody start (advanceInput (advanceInput inp c) d) (decoded :: acc);
+             })
+        else
+          stringBody start (advanceInput inp c) (c :: acc);
+  };
+
+# stringP :: Parser Expr
+let stringP =
+  lexeme
+    (Parser (fn inp =>
+      match runP (charP "\"") inp {
+        PFail e => PFail e;
+        POk _ rest _ =>
+          match stringBody inp rest [] {
+            PFail e => PFail e;
+            POk s after e => POk (EStr s) after e;
+          };
+      }));
+
+# =====================================================================
+# Part 6: Types
+#   Type ::= PrimitiveType | FunctionType | RecordType
+# =====================================================================
+
+let primitiveTypeP =
+  choiceP [
+    mapP (fn _ => TyNumber) (keywordP "number"),
+    mapP (fn _ => TyBoolean) (keywordP "boolean"),
+    mapP (fn _ => TyString) (keywordP "string"),
+    mapP (fn _ => TyNull) (keywordP "null")
+  ];
+
+# TypeParameter ::= Identifier ":" Type
+let typeParamP ty =
+  bindP identifierP (fn name =>
+    thenP (symbolP ":") (mapP (fn t => Pair name t) ty));
+
+# FunctionType ::= "(" TypeParameters? ")" "=>" Type
+let functionTypeP ty =
+  thenP (symbolP "(")
+    (bindP (sepByP (typeParamP ty) (symbolP ",")) (fn params =>
+      thenP (symbolP ")")
+        (thenP (operatorP "=>")
+          (mapP (fn ret => TyFun params ret) ty))));
+
+# TypeField ::= Identifier ":" Type
+let typeFieldP ty =
+  bindP identifierP (fn name =>
+    thenP (symbolP ":") (mapP (fn t => Pair name t) ty));
+
+# RecordType ::= "{" (TypeField (";" TypeField)* ";"?)? "}"
+let recordTypeP ty =
+  thenP (symbolP "{")
+    (bindP
+      (orP
+        (bindP (sepBy1P (typeFieldP ty) (symbolP ";")) (fn fields =>
+          thenP (optionP (symbolP ";")) (pureP fields)))
+        (pureP []))
+      (fn fields =>
+        thenP (symbolP "}") (pureP (TyRecord fields))));
+
+# typeAt / typeP: the knot for the recursive Type grammar.
+letrec typeAt inp =
+  runP
+    (choiceP [
+      primitiveTypeP,
+      functionTypeP (Parser typeAt),
+      recordTypeP (Parser typeAt),
+      failP "expected a type"
+    ])
+    inp;
+
+let typeP =
+  Parser typeAt;
+
+# =====================================================================
+# Part 7: Expressions
+#   Each precedence level takes `expr` (the full Expr parser) as an
+#   argument; exprP below ties the recursive knot.
+# =====================================================================
+
+# Parameter ::= Identifier ":" Type
+let paramP =
+  bindP identifierP (fn name =>
+    thenP (symbolP ":") (mapP (fn t => Pair name t) typeP));
+
+# ArrowFunction ::= "(" Parameters? ")" ":" Type "=>" Expr
+#   A body that is a record literal must be parenthesized.
+let arrowP expr =
+  thenP (symbolP "(")
+    (bindP (sepByP paramP (symbolP ",")) (fn params =>
+      thenP (symbolP ")")
+        (thenP (symbolP ":")
+          (bindP typeP (fn ret =>
+            thenP (operatorP "=>")
+              (thenP
+                (notFollowedByP (textP "{")
+                  "an arrow body that is a record literal must be parenthesized")
+                (mapP (fn body => EFun params ret body) expr)))))));
+
+# "(" Expr ")"
+let parenP expr =
+  thenP (symbolP "(") (skipAfter expr (symbolP ")"));
+
+# RecordField ::= Identifier ":" Expr
+let recordFieldP expr =
+  bindP identifierP (fn name =>
+    thenP (symbolP ":") (mapP (fn e => Pair name e) expr));
+
+# Record ::= "{" (RecordField ("," RecordField)*)? "}"
+let recordP expr =
+  thenP (symbolP "{")
+    (bindP (sepByP (recordFieldP expr) (symbolP ",")) (fn fields =>
+      thenP (symbolP "}") (pureP (ERecord fields))));
+
+# Primary ::= ArrowFunction | Number | String | "true" | "false" | "null"
+#           | Identifier | "(" Expr ")" | Record
+#   ArrowFunction is tried before "(" Expr ")"; orP backtracks if it fails.
+let primaryP expr =
+  choiceP [
+    arrowP expr,
+    numberP,
+    stringP,
+    mapP (fn _ => EBool true) (keywordP "true"),
+    mapP (fn _ => EBool false) (keywordP "false"),
+    mapP (fn _ => ENull) (keywordP "null"),
+    mapP (fn x => EVar x) identifierP,
+    parenP expr,
+    recordP expr,
+    failP "expected an expression"
+  ];
+
+# Postfix suffixes, applied in source order.
+type Suffix
+  = SufCall [Expr]
+  | SufField String;
+
+# CallSuffix ::= "(" Arguments? ")"
+let callSuffixP expr =
+  thenP (symbolP "(")
+    (bindP (sepByP expr (symbolP ",")) (fn args =>
+      thenP (symbolP ")") (pureP (SufCall args))));
+
+# FieldSuffix ::= "." Identifier
+let fieldSuffixP =
+  thenP (symbolP ".") (mapP (fn name => SufField name) identifierP);
+
+# applySuffix :: Expr -> Suffix -> Expr
+let applySuffix e suffix =
+  match suffix {
+    SufCall args => ECall e args;
+    SufField name => EField e name;
+  };
+
+# Postfix ::= Primary (CallSuffix | FieldSuffix)*
+let postfixP expr =
+  bindP (primaryP expr) (fn base =>
+    mapP (fn suffixes => listFoldl applySuffix base suffixes)
+      (manyP (orP (callSuffixP expr) fieldSuffixP)));
+
+# Unary ::= ("!" | "-") Unary | Postfix
+letrec unaryP expr =
+  orP
+    (bindP
+      (orP
+        (mapP (fn _ => OpNeg) (operatorP "-"))
+        (mapP (fn _ => OpNot) (operatorP "!")))
+      (fn op => mapP (fn inner => EUnary op inner) (unaryP expr)))
+    (postfixP expr);
+
+# binOpP :: String -> BinOp -> Parser (Expr -> Expr -> Expr)
+let binOpP text op =
+  mapP (fn _ => fn l => fn r => EBinary op l r) (operatorP text);
+
+# Multiplication ::= Unary (("*" | "/") Unary)*
+let multiplicationP expr =
+  chainl1 (unaryP expr) (orP (binOpP "*" OpMul) (binOpP "/" OpDiv));
+
+# Addition ::= Multiplication (("+" | "-") Multiplication)*
+let additionP expr =
+  chainl1 (multiplicationP expr) (orP (binOpP "+" OpAdd) (binOpP "-" OpSub));
+
+# Comparison ::= Addition (("<" | "<=" | ">" | ">=") Addition)*
+let comparisonP expr =
+  chainl1 (additionP expr)
+    (choiceP [binOpP "<=" OpLe, binOpP ">=" OpGe, binOpP "<" OpLt, binOpP ">" OpGt]);
+
+# Equality ::= Comparison (("===" | "!==") Comparison)*
+let equalityP expr =
+  chainl1 (comparisonP expr) (orP (binOpP "===" OpEq) (binOpP "!==" OpNeq));
+
+# LogicalAnd ::= Equality ("&&" Equality)*
+let logicalAndP expr =
+  chainl1 (equalityP expr) (binOpP "&&" OpAnd);
+
+# LogicalOr ::= LogicalAnd ("||" LogicalAnd)*
+let logicalOrP expr =
+  chainl1 (logicalAndP expr) (binOpP "||" OpOr);
+
+# Assignment ::= Identifier "=" Assignment | LogicalOr
+#   Right-associative because the right side is a full Expr (= Assignment).
+#   orP backtracks, so "x" is not committed unless "=" also matches.
+let assignmentP expr =
+  orP
+    (bindP identifierP (fn name =>
+      thenP (operatorP "=") (mapP (fn rhs => EAssign name rhs) expr)))
+    (logicalOrP expr);
+
+# exprAt / exprP: the knot for the recursive Expr grammar.  Expr ::= Assignment
+letrec exprAt inp =
+  runP (assignmentP (Parser exprAt)) inp;
+
+let exprP =
+  Parser exprAt;
+
+# =====================================================================
+# Part 8: Statements and programs
+# =====================================================================
+
+# stmtsLoop :: Parser Stmt -> Parser a -> String -> Input -> [Stmt] -> Reply [Stmt]
+#   Statement* followed by `close` ("}" or end of input).
+letrec stmtsLoop stmt close closeDesc inp acc =
+  match runP close inp {
+    POk _ rest _ => POk (listReverse acc) rest noError;
+    PFail e1 =>
+      match runP stmt inp {
+        POk s rest _ => stmtsLoop stmt close closeDesc rest (s :: acc);
+        PFail e2 =>
+          if errOffset e2 > errOffset e1 then
+            PFail e2
+          else
+            PFail (errorAt inp (str_concat "expected a statement or " closeDesc));
+      };
+  };
+
+# Block ::= "{" Statement* "}"
+let blockP stmt =
+  thenP (symbolP "{")
+    (mapP (fn body => SBlock body)
+      (Parser (fn inp => stmtsLoop stmt (symbolP "}") "'}'" inp [])));
+
+# LetStmt ::= "let" Identifier TypeAnn? "=" Expr ";"
+let letStmtP =
+  thenP (keywordP "let")
+    (bindP identifierP (fn name =>
+      bindP (optionP (thenP (symbolP ":") typeP)) (fn ann =>
+        thenP (operatorP "=")
+          (bindP exprP (fn init =>
+            thenP (symbolP ";") (pureP (SLet name ann init)))))));
+
+# IfStmt ::= "if" "(" Expr ")" Block ("else" (Block | IfStmt))?
+#   TWIST: `else if (...) {...}` is sugar for `else { if (...) {...} }`,
+#   so the AST, checker and evaluator do not change at all.
+letrec ifStmtP stmt =
+  thenP (keywordP "if")
+    (thenP (symbolP "(")
+      (bindP exprP (fn cond =>
+        thenP (symbolP ")")
+          (bindP (blockP stmt) (fn thenBlock =>
+            mapP
+              (fn elseOpt =>
+                match elseOpt {
+                  None => SIf cond thenBlock (SBlock []);
+                  Some elseBlock => SIf cond thenBlock elseBlock;
+                })
+              (optionP
+                (thenP (keywordP "else")
+                  (orP
+                    (blockP stmt)
+                    (mapP (fn nested => SBlock [nested]) (ifStmtP stmt))))))))));
+
+# WhileStmt ::= "while" "(" Expr ")" Block
+let whileStmtP stmt =
+  thenP (keywordP "while")
+    (thenP (symbolP "(")
+      (bindP exprP (fn cond =>
+        thenP (symbolP ")")
+          (mapP (fn body => SWhile cond body) (blockP stmt)))));
+
+# ExprStmt ::= Expr ";"    A leading "{" at statement position is a block.
+let exprStmtP =
+  thenP (notFollowedByP (textP "{") "expected a statement")
+    (bindP exprP (fn e => thenP (symbolP ";") (pureP (SExpr e))));
+
+# Statement ::= LetStmt | IfStmt | WhileStmt | Block | ExprStmt
+let statementP stmt =
+  choiceP [
+    letStmtP,
+    ifStmtP stmt,
+    whileStmtP stmt,
+    blockP stmt,
+    exprStmtP
+  ];
+
+letrec stmtAt inp =
+  runP (statementP (Parser stmtAt)) inp;
+
+let stmtP =
+  Parser stmtAt;
+
+# Program ::= Statement* EOF     (whitespace/comments allowed before and after)
+let programP =
+  thenP wsP
+    (mapP (fn stmts => Program stmts)
+      (Parser (fn inp => stmtsLoop stmtP eofP "end of input" inp [])));
+
+# parse :: String -> Result Program ParseError
+let parse src =
+  match runP programP (makeInput src) {
+    POk prog _ _ => Ok prog;
+    PFail e => Err e;
+  };
+
+# parseExpr :: String -> Result Expr ParseError   (a lone expression; for tests)
+let parseExpr src =
+  match runP (thenP wsP (skipAfter exprP eofP)) (makeInput src) {
+    POk e _ _ => Ok e;
+    PFail e => Err e;
+  };

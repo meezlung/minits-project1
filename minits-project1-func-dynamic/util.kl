@@ -1,0 +1,126 @@
+# util.kl -- general-purpose types and list helpers shared by every stage.
+#
+# Include chain (each file includes the one before it, so nothing is ever
+# defined twice):
+#   util.kl -> syntax.kl -> parser.kl -> checker.kl -> eval.kl -> minits.kl -> tests.kl
+
+# Option a: an optional value.
+type Option a
+  = None
+  | Some a;
+
+# Result a e: success type first, error type second (as in the spec).
+type Result a e
+  = Ok a
+  | Err e;
+
+# Pair a b: our stand-in for a tuple (a, b).
+type Pair a b
+  = Pair a b;
+
+# ---------------------------------------------------------------------
+# Lists
+
+# listReverse :: [a] -> [a]
+let listReverse xs =
+  let loop acc rest =
+    match rest {
+      [] => acc;
+      x :: more => loop (x :: acc) more;
+    }
+  in
+    loop [] xs;
+
+# listLength :: [a] -> Int
+let listLength xs =
+  match xs {
+    [] => 0;
+    _ :: rest => 1 + listLength rest;
+  };
+
+# listMap :: (a -> b) -> [a] -> [b]
+let listMap f xs =
+  match xs {
+    [] => [];
+    x :: rest => f x :: listMap f rest;
+  };
+
+# listFoldl :: (b -> a -> b) -> b -> [a] -> b
+let listFoldl f acc xs =
+  match xs {
+    [] => acc;
+    x :: rest => listFoldl f (f acc x) rest;
+  };
+
+# listAppend :: [a] -> [a] -> [a]
+let listAppend xs ys =
+  match xs {
+    [] => ys;
+    x :: rest => x :: listAppend rest ys;
+  };
+
+# listAny :: (a -> Bool) -> [a] -> Bool
+let listAny keep xs =
+  match xs {
+    [] => false;
+    x :: rest => if keep x then true else listAny keep rest;
+  };
+
+# listAll :: (a -> Bool) -> [a] -> Bool
+let listAll keep xs =
+  match xs {
+    [] => true;
+    x :: rest => if keep x then listAll keep rest else false;
+  };
+
+# listContainsString :: String -> [String] -> Bool
+let listContainsString s xs =
+  listAny (fn x => x == s) xs;
+
+# firstDuplicate :: [String] -> Option String
+#   The first name that appears more than once, scanning left to right.
+let firstDuplicate names =
+  let go seen rest =
+    match rest {
+      [] => None;
+      n :: more =>
+        if listContainsString n seen then Some n else go (n :: seen) more;
+    }
+  in
+    go [] names;
+
+# joinWith :: String -> [String] -> String
+let joinWith sep parts =
+  let go acc rest =
+    match rest {
+      [] => acc;
+      p :: more => go (str_concat acc (str_concat sep p)) more;
+    }
+  in
+    match parts {
+      [] => "";
+      p :: more => go p more;
+    };
+
+# ---------------------------------------------------------------------
+# Numbers
+
+# isFiniteFloat :: Float -> Bool
+#   inf - inf and nan - nan are both nan, and nan is never equal to itself.
+let isFiniteFloat x =
+  (x -. x) == 0.0;
+
+# floatToText :: Float -> String
+#   Whole numbers print without a fractional part (e.g. 120 instead of 120.0);
+#   everything else uses KLang's float_to_string.
+let floatToText x =
+  if isFiniteFloat x then
+    (if int_to_float (float_to_int x) == x then
+       (if x < 0.0 then
+          str_concat "-" (int_to_string (0 - float_to_int x))
+        else
+          int_to_string (float_to_int x))
+     else
+       float_to_string x)
+  else
+    float_to_string x;
