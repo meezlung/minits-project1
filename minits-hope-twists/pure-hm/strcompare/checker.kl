@@ -1,0 +1,594 @@
+# checker.kl -- static type checking (Section 3 of the spec).
+include "parser.kl";
+
+# =====================================================================
+# Types, type errors, and environments
+# =====================================================================
+
+# Semantic types:  number | boolean | string | null | (t1..tn) -> t | {f1: t1 ...}
+type Type
+  = TNumber
+  | TBoolean
+  | TString
+  | TNull
+  | TFun [Type] Type
+  | TRecord [Pair String Type];   # field name, field type
+
+# Each constructor names the requirement that failed.
+type TypeError
+  = UnboundVariable String
+  | DuplicateDeclaration String
+  | DuplicateField String
+  | DuplicateParameter String
+  | AnnotationMismatch String Type Type      # let x: expected = (actual)
+  | AssignmentMismatch String Type Type      # x = e : variable type, value type
+  | ReturnTypeMismatch Type Type             # declared, actual body type
+  | InvalidOperand String Type               # unary op, operand type
+  | InvalidOperands String Type Type         # binary op, left, right
+  | NonBooleanCondition Type
+  | NotAFunction Type
+  | ArityMismatch Int Int                    # expected, actual
+  | ArgumentMismatch Int Type Type           # 1-based position, expected, actual
+  | NotARecord Type
+  | MissingField String Type;
+
+# TypeEnv: a stack of scopes, innermost first. Each scope is a list of
+# (name, type) bindings. Lists are immutable, so extending a scope never
+# changes an environment that was captured earlier.
+type TypeEnv
+  = TypeEnv [[Pair String Type]];
+
+# emptyTypeEnv: Γ0, one empty global scope
+let emptyTypeEnv =
+  TypeEnv [[]];
+
+# pushScope :: TypeEnv -> TypeEnv          push(Γ)
+let pushScope env =
+  match env {
+    TypeEnv scopes => TypeEnv ([] :: scopes);
+  };
+
+# bindLocal :: TypeEnv -> String -> Type -> TypeEnv      Γ[x ↦ τ]
+let bindLocal env name t =
+  match env {
+    TypeEnv [] => TypeEnv [[Pair name t]];
+    TypeEnv (scope :: outer) => TypeEnv ((Pair name t :: scope) :: outer);
+  };
+
+# scopeLookup :: String -> [Pair String Type] -> Option Type
+letrec scopeLookup name scope =
+  match scope {
+    [] => None;
+    Pair n t :: rest => if n == name then Some t else scopeLookup name rest;
+  };
+
+# lookupType :: TypeEnv -> String -> Option Type       Γ(x), innermost first
+let lookupType env name =
+  letrec go scopes =
+    match scopes {
+      [] => None;
+      scope :: outer =>
+        match scopeLookup name scope {
+          Some t => Some t;
+          None => go outer;
+        };
+    }
+  in
+    match env {
+      TypeEnv scopes => go scopes;
+    };
+
+# declaredLocally :: TypeEnv -> String -> Bool        x ∈ local(Γ)
+let declaredLocally env name =
+  match env {
+    TypeEnv [] => false;
+    TypeEnv (scope :: _) =>
+      match scopeLookup name scope {
+        Some _ => true;
+        None => false;
+      };
+  };
+
+# =====================================================================
+# Type equality and display
+# =====================================================================
+
+# fieldTypeOf :: String -> [Pair String Type] -> Option Type
+letrec fieldTypeOf name fields =
+  match fields {
+    [] => None;
+    Pair n t :: rest => if n == name then Some t else fieldTypeOf name rest;
+  };
+
+# typeEq :: Type -> Type -> Bool
+#   Functions: parameters in order and return type exactly.
+#   Records: same field set and corresponding types, in any order.
+letrec typeEq a b =
+  letrec listEq xs ys =
+    match xs {
+      [] => (match ys { [] => true; _ => false; });
+      x :: xrest =>
+        match ys {
+          [] => false;
+          y :: yrest => typeEq x y && listEq xrest yrest;
+        };
+    }
+  in
+  match a {
+    TNumber => (match b { TNumber => true; _ => false; });
+    TBoolean => (match b { TBoolean => true; _ => false; });
+    TString => (match b { TString => true; _ => false; });
+    TNull => (match b { TNull => true; _ => false; });
+    TFun ps r =>
+      match b {
+        TFun qs q => listEq ps qs && typeEq r q;
+        _ => false;
+      };
+    TRecord fs =>
+      match b {
+        TRecord gs =>
+          (listLength fs == listLength gs)
+            && listAll
+                 (fn f =>
+                   match f {
+                     Pair n t =>
+                       match fieldTypeOf n gs {
+                         None => false;
+                         Some u => typeEq t u;
+                       };
+                   })
+                 fs;
+        _ => false;
+      };
+  };
+
+# isPrimitive :: Type -> Bool
+let isPrimitive t =
+  match t {
+    TNumber => true;
+    TBoolean => true;
+    TString => true;
+    TNull => true;
+    _ => false;
+  };
+
+# showType :: Type -> String  (MiniTS syntax; parameter names are invented)
+letrec showType t =
+  match t {
+    TNumber => "number";
+    TBoolean => "boolean";
+    TString => "string";
+    TNull => "null";
+    TFun ps r =>
+      letrec params i rest =
+        match rest {
+          [] => [];
+          p :: more => str_join ["p", int_to_string i, ": ", showType p] :: params (i + 1) more;
+        }
+      in
+        str_join ["(", joinWith ", " (params 1 ps), ") => ", showType r];
+    TRecord fs =>
+      str_join [
+        "{ ",
+        str_join (listMap (fn f => match f { Pair n ft => str_join [n, ": ", showType ft, "; "]; }) fs),
+        "}"
+      ];
+  };
+
+# showTypeError :: TypeError -> String
+let showTypeError e =
+  match e {
+    UnboundVariable x => str_concat "unbound variable " x;
+    DuplicateDeclaration x => str_join ["'", x, "' is already declared in this scope"];
+    DuplicateField f => str_join ["duplicate field '", f, "'"];
+    DuplicateParameter p => str_join ["duplicate parameter '", p, "'"];
+    AnnotationMismatch x expected actual =>
+      str_join ["'", x, "' is annotated ", showType expected, " but its initializer has type ", showType actual];
+    AssignmentMismatch x expected actual =>
+      str_join ["cannot assign a value of type ", showType actual, " to '", x, "' of type ", showType expected];
+    ReturnTypeMismatch expected actual =>
+      str_join ["function body has type ", showType actual, " but the declared return type is ", showType expected];
+    InvalidOperand op t => str_join ["operator ", op, " cannot be applied to ", showType t];
+    InvalidOperands op l r =>
+      str_join ["operator ", op, " cannot be applied to ", showType l, " and ", showType r];
+    NonBooleanCondition t => str_concat "condition must be boolean, not " (showType t);
+    NotAFunction t => str_concat "cannot call a value of type " (showType t);
+    ArityMismatch expected actual =>
+      str_join ["expected ", int_to_string expected, " argument(s) but got ", int_to_string actual];
+    ArgumentMismatch i expected actual =>
+      str_join ["argument ", int_to_string i, " should have type ", showType expected, " but has type ", showType actual];
+    NotARecord t => str_concat "field access on a non-record type " (showType t);
+    MissingField f t => str_join ["type ", showType t, " has no field '", f, "'"];
+  };
+
+# =====================================================================
+# Well-formed annotations: TypeExpr -> Type
+#   Rejects duplicate record field names and duplicate parameter names in
+#   function-type syntax. Parameter names are then dropped.
+# =====================================================================
+
+# resolveType :: TypeExpr -> Result Type TypeError
+letrec resolveType te =
+  letrec resolveList tes =
+    match tes {
+      [] => Ok [];
+      t1 :: rest =>
+        match resolveType t1 {
+          Err e => Err e;
+          Ok t =>
+            match resolveList rest {
+              Err e => Err e;
+              Ok ts => Ok (t :: ts);
+            };
+        };
+    }
+  in
+  letrec resolveFields fields =
+    match fields {
+      [] => Ok [];
+      Pair n t1 :: rest =>
+        match resolveType t1 {
+          Err e => Err e;
+          Ok t =>
+            match resolveFields rest {
+              Err e => Err e;
+              Ok fts => Ok (Pair n t :: fts);
+            };
+        };
+    }
+  in
+  match te {
+    TyNumber => Ok TNumber;
+    TyBoolean => Ok TBoolean;
+    TyString => Ok TString;
+    TyNull => Ok TNull;
+    TyFun params ret =>
+      match firstDuplicate (listMap (fn p => match p { Pair n _ => n; }) params) {
+        Some dup => Err (DuplicateParameter dup);
+        None =>
+          match resolveList (listMap (fn p => match p { Pair _ t => t; }) params) {
+            Err e => Err e;
+            Ok paramTypes =>
+              match resolveType ret {
+                Err e => Err e;
+                Ok retType => Ok (TFun paramTypes retType);
+              };
+          };
+      };
+    TyRecord fields =>
+      match firstDuplicate (listMap (fn f => match f { Pair n _ => n; }) fields) {
+        Some dup => Err (DuplicateField dup);
+        None =>
+          match resolveFields fields {
+            Err e => Err e;
+            Ok fts => Ok (TRecord fts);
+          };
+      };
+  };
+
+# resolveTypeList :: [TypeExpr] -> Result [Type] TypeError
+letrec resolveTypeList tes =
+  match tes {
+    [] => Ok [];
+    te :: rest =>
+      match resolveType te {
+        Err e => Err e;
+        Ok t =>
+          match resolveTypeList rest {
+            Err e => Err e;
+            Ok ts => Ok (t :: ts);
+          };
+      };
+  };
+
+# =====================================================================
+# Expressions:  checkExpr : Expr -> TypeEnv -> Result Type TypeError
+# =====================================================================
+
+# Operator typing for the strict binary operators (T-Arith, T-Concat,
+# T-Compare, T-Eq, T-Logic). Both operand types are already known.
+let binaryResultType op l r =
+  let bad = Err (InvalidOperands (binOpText op) l r) in
+  let bothNumbers =
+    match l { TNumber => (match r { TNumber => true; _ => false; }); _ => false; }
+  in
+  let bothStrings =
+    match l { TString => (match r { TString => true; _ => false; }); _ => false; }
+  in
+  let bothBooleans =
+    match l { TBoolean => (match r { TBoolean => true; _ => false; }); _ => false; }
+  in
+    match op {
+      OpAdd => if bothNumbers then Ok TNumber else if bothStrings then Ok TString else bad;
+      OpSub => if bothNumbers then Ok TNumber else bad;
+      OpMul => if bothNumbers then Ok TNumber else bad;
+      OpDiv => if bothNumbers then Ok TNumber else bad;
+      # TWIST: < <= > >= also accept two strings
+      OpLt => if bothNumbers || bothStrings then Ok TBoolean else bad;
+      OpLe => if bothNumbers || bothStrings then Ok TBoolean else bad;
+      OpGt => if bothNumbers || bothStrings then Ok TBoolean else bad;
+      OpGe => if bothNumbers || bothStrings then Ok TBoolean else bad;
+      OpEq => if isPrimitive l && typeEq l r then Ok TBoolean else bad;
+      OpNeq => if isPrimitive l && typeEq l r then Ok TBoolean else bad;
+      OpAnd => if bothBooleans then Ok TBoolean else bad;
+      OpOr => if bothBooleans then Ok TBoolean else bad;
+    };
+
+# zipParams :: [Pair String TypeExpr] -> [Type] -> [Pair (Pair String TypeExpr) Type]
+letrec zipParams ps ts =
+  match ps {
+    [] => [];
+    p :: prest =>
+      match ts {
+        [] => [];
+        t :: trest => Pair p t :: zipParams prest trest;
+      };
+  };
+
+# checkExpr :: Expr -> TypeEnv -> Result Type TypeError
+letrec checkExpr e env =
+  # checkArgs: each argument must have its parameter's type (left to right)
+  letrec checkArgs args paramTypes i =
+    match args {
+      [] => Ok unit;
+      a :: rest =>
+        match paramTypes {
+          [] => Ok unit;
+          p :: prest =>
+            match checkExpr a env {
+              Err err => Err err;
+              Ok at =>
+                if typeEq at p then checkArgs rest prest (i + 1)
+                else Err (ArgumentMismatch i p at);
+            };
+        };
+    }
+  in
+  # checkFields: record field expressions, in source order
+  letrec checkFields fields =
+    match fields {
+      [] => Ok [];
+      Pair n fe :: rest =>
+        match checkExpr fe env {
+          Err err => Err err;
+          Ok t =>
+            match checkFields rest {
+              Err err => Err err;
+              Ok fts => Ok (Pair n t :: fts);
+            };
+        };
+    }
+  in
+  match e {
+    # T-Number, T-String, T-Bool, T-Null
+    ENum _ => Ok TNumber;
+    EStr _ => Ok TString;
+    EBool _ => Ok TBoolean;
+    ENull => Ok TNull;
+
+    # T-Var
+    EVar x =>
+      match lookupType env x {
+        None => Err (UnboundVariable x);
+        Some t => Ok t;
+      };
+
+    # T-Assign: Γ(x) = τ and Γ ⊢ e : τ
+    EAssign x rhs =>
+      match lookupType env x {
+        None => Err (UnboundVariable x);
+        Some t =>
+          match checkExpr rhs env {
+            Err err => Err err;
+            Ok u => if typeEq t u then Ok t else Err (AssignmentMismatch x t u);
+          };
+      };
+
+    # T-Neg, T-Not
+    EUnary op inner =>
+      match checkExpr inner env {
+        Err err => Err err;
+        Ok t =>
+          match op {
+            OpNeg => (match t { TNumber => Ok TNumber; _ => Err (InvalidOperand "-" t); });
+            OpNot => (match t { TBoolean => Ok TBoolean; _ => Err (InvalidOperand "!" t); });
+          };
+      };
+
+    # Binary operators: both operands are checked, even for && and ||.
+    EBinary op l r =>
+      match checkExpr l env {
+        Err err => Err err;
+        Ok lt =>
+          match checkExpr r env {
+            Err err => Err err;
+            Ok rt => binaryResultType op lt rt;
+          };
+      };
+
+    # T-Fun: distinct parameters; body checked in push(Γ)[x1 ↦ τ1, ...]
+    EFun params retAnn body =>
+      match firstDuplicate (listMap (fn p => match p { Pair n _ => n; }) params) {
+        Some dup => Err (DuplicateParameter dup);
+        None =>
+          match resolveTypeList (listMap (fn p => match p { Pair _ t => t; }) params) {
+            Err err => Err err;
+            Ok paramTypes =>
+              match resolveType retAnn {
+                Err err => Err err;
+                Ok retType =>
+                  let bodyEnv =
+                    listFoldl
+                      (fn acc pr => match pr { Pair p t => match p { Pair n _ => bindLocal acc n t; }; })
+                      (pushScope env)
+                      (zipParams params paramTypes)
+                  in
+                    match checkExpr body bodyEnv {
+                      Err err => Err err;
+                      Ok bodyType =>
+                        if typeEq bodyType retType then Ok (TFun paramTypes retType)
+                        else Err (ReturnTypeMismatch retType bodyType);
+                    };
+              };
+          };
+      };
+
+    # T-App: callee is a function, exact arity, each argument matches.
+    ECall callee args =>
+      match checkExpr callee env {
+        Err err => Err err;
+        Ok ct =>
+          match ct {
+            TFun paramTypes retType =>
+              if listLength paramTypes != listLength args then
+                Err (ArityMismatch (listLength paramTypes) (listLength args))
+              else
+                (match checkArgs args paramTypes 1 {
+                   Err err => Err err;
+                   Ok _ => Ok retType;
+                 });
+            _ => Err (NotAFunction ct);
+          };
+      };
+
+    # T-Field
+    EField target name =>
+      match checkExpr target env {
+        Err err => Err err;
+        Ok tt =>
+          match tt {
+            TRecord fields =>
+              match fieldTypeOf name fields {
+                None => Err (MissingField name tt);
+                Some ft => Ok ft;
+              };
+            _ => Err (NotARecord tt);
+          };
+      };
+
+    # T-Record: distinct field names; each field expression checked in order.
+    ERecord fields =>
+      match firstDuplicate (listMap (fn f => match f { Pair n _ => n; }) fields) {
+        Some dup => Err (DuplicateField dup);
+        None =>
+          match checkFields fields {
+            Err err => Err err;
+            Ok fts => Ok (TRecord fts);
+          };
+      };
+  };
+
+# =====================================================================
+# Statements:  checkStmt : Stmt -> TypeEnv -> Result TypeEnv TypeError
+# =====================================================================
+
+# expectBoolean :: Expr -> TypeEnv -> Result Unit TypeError   (conditions)
+let expectBoolean cond env =
+  match checkExpr cond env {
+    Err err => Err err;
+    Ok t =>
+      match t {
+        TBoolean => Ok unit;
+        _ => Err (NonBooleanCondition t);
+      };
+  };
+
+# checkStmt :: Stmt -> TypeEnv -> Result TypeEnv TypeError
+letrec checkStmt s env =
+  # seq: T-SeqEmpty / T-SeqCons
+  letrec seq stmts cur =
+    match stmts {
+      [] => Ok cur;
+      st :: rest =>
+        match checkStmt st cur {
+          Err err => Err err;
+          Ok next => seq rest next;
+        };
+    }
+  in
+  match s {
+    # T-Let / T-LetAnn: the new name is visible only after the initializer.
+    SLet x ann init =>
+      match checkExpr init env {
+        Err err => Err err;
+        Ok actual =>
+          if declaredLocally env x then
+            Err (DuplicateDeclaration x)
+          else
+            (match ann {
+               None => Ok (bindLocal env x actual);
+               Some te =>
+                 match resolveType te {
+                   Err err => Err err;
+                   Ok declared =>
+                     if typeEq declared actual then Ok (bindLocal env x declared)
+                     else Err (AnnotationMismatch x declared actual);
+                 };
+             });
+      };
+
+    # T-ExprStmt
+    SExpr e =>
+      match checkExpr e env {
+        Err err => Err err;
+        Ok _ => Ok env;
+      };
+
+    # T-Block: check inside push(Γ), then restore Γ.
+    SBlock body =>
+      match seq body (pushScope env) {
+        Err err => Err err;
+        Ok _ => Ok env;
+      };
+
+    # T-If: condition boolean; both branches checked.
+    SIf cond thenBlock elseBlock =>
+      match expectBoolean cond env {
+        Err err => Err err;
+        Ok _ =>
+          match checkStmt thenBlock env {
+            Err err => Err err;
+            Ok _ =>
+              match checkStmt elseBlock env {
+                Err err => Err err;
+                Ok _ => Ok env;
+              };
+          };
+      };
+
+    # T-While: condition boolean; body checked.
+    SWhile cond body =>
+      match expectBoolean cond env {
+        Err err => Err err;
+        Ok _ =>
+          match checkStmt body env {
+            Err err => Err err;
+            Ok _ => Ok env;
+          };
+      };
+  };
+
+# checkStmts :: [Stmt] -> TypeEnv -> Result TypeEnv TypeError  (T-SeqEmpty/T-SeqCons)
+letrec checkStmts stmts env =
+  match stmts {
+    [] => Ok env;
+    s :: rest =>
+      match checkStmt s env {
+        Err err => Err err;
+        Ok env1 => checkStmts rest env1;
+      };
+  };
+
+# checkProgramEnv :: Program -> Result TypeEnv TypeError
+#   Top-level statements form one sequence in Γ0 (not an implicit block).
+let checkProgramEnv prog =
+  match prog {
+    Program stmts => checkStmts stmts emptyTypeEnv;
+  };
+
+# checkProgram :: Program -> Result Unit TypeError       (T-Program)
+let checkProgram prog =
+  match checkProgramEnv prog {
+    Err err => Err err;
+    Ok _ => Ok unit;
+  };

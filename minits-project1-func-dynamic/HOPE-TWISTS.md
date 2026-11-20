@@ -4,7 +4,7 @@ This file covers how to change this interpreter when a HOPE twist asks for a new
 
 All line numbers are for the **unmodified** files in this folder. Once you insert lines for one twist, every later line in that file shifts down. When you do two twists, find the spot by the function name given next to each line number (Ctrl+F) rather than by the number.
 
-Every recipe below was compiled and run with the real KLang 12.0.0 compiler. Ten twists have complete reference implementations in `../minits-hope-twists/<name>/`, written in **pure-hm**. To use one in func-dynamic, apply the substitutions in section 2.
+Every recipe below was compiled and run with the real KLang 12.0.0 compiler. Ten twists have complete reference implementations in `../minits-hope-twists/func-dynamic/<name>/`, written in **func-dynamic** like this folder, so you can copy their code directly. The same ten twists exist for the other dialects in `../minits-hope-twists/<dialect>/<name>/`.
 
 ---
 
@@ -57,7 +57,7 @@ Pipeline: `run src` (`minits.kl:14`) = **parse** → **checkProgram** → **exec
 ## 2. Writing KLang in this folder (func-dynamic)
 
 - **No type annotations** anywhere in the KLang code.
-- **Recursion uses plain `let`.** `letrec` is rejected by func-dynamic. When a recipe or a reference folder (written in pure-hm) says `letrec f`, write `let f`.
+- **Recursion uses plain `let`.** `letrec` is rejected by func-dynamic. When code written for func-hm or pure-hm says `letrec f`, write `let f`.
 - **The unit value is written `[]`.** Where pure-hm code says `unit` (for example `POk unit ...`, `Ok unit`, `pureP unit`), write `[]`.
 - Output is direct: `output`, `outputLn`. Tests end with `report allTests 0 0;` (`tests.kl:683`).
 
@@ -86,13 +86,13 @@ Ask: **is it new syntax only (sugar), a new operator, a new expression, or a new
 | New `TypeError` | | | add a constructor :18–33 + a line in `showTypeError` :179 | | **add it to `typeErrorKind` :112**, or tests.kl will not compile (non-exhaustive match) |
 | New `RuntimeError` | | | | constructor :33 + `showRuntimeError` :151 | |
 
-**Watch out:** adding a constructor to `Expr`/`Stmt`/`BinOp`/`TypeError` makes every `match` on that type non-exhaustive. The compiler tells you where; fix each place it names (usually the printer in `syntax.kl`, `showTypeError`, and `typeErrorKind` in tests).
+**Watch out:** adding a constructor to `Expr`/`Stmt`/`BinOp`/`TypeError` makes every `match` on that type non-exhaustive. **In func-dynamic nothing warns you at compile time:** it is a runtime error (`match was not exhaustive: X`), and only when that case is actually reached. So search every file for a sibling constructor (`OpDiv` for a new `BinOp`, `EField` for a new `Expr`, `MissingField` for a new `TypeError`) and add your case next to each one (usually the printer in `syntax.kl`, `showTypeError`, and `typeErrorKind` in tests).
 
 ---
 
 ## 4. Twist recipes
 
-Each recipe lists **file:line → what to do**, then the code, then tests. The code is copied from the tested reference folder `../minits-hope-twists/<name>/` and already converted to func-dynamic.
+Each recipe lists **file:line → what to do**, then the code, then tests. The code is copied from the tested reference folder `../minits-hope-twists/func-dynamic/<name>/` and already converted to func-dynamic.
 
 ### A. Modulo `%` (same precedence as `*` `/`) — `modop/`
 
@@ -243,7 +243,7 @@ This one changes the type environment, so it is the largest twist.
 4. `eval.kl`, `execStmt`: `SConst x ann init => execStmt (SLet x ann init) env store;`. At runtime a const behaves exactly like a let.
 5. `tests.kl:128`: add `AssignToConst _ => "AssignToConst";` to `typeErrorKind`.
 
-Copy the exact code from `../minits-hope-twists/const/checker.kl` lines 38–94.
+Copy the exact code from `../minits-hope-twists/func-dynamic/const/checker.kl` lines 38–94.
 
 ### F. `for (init; cond; update) { body }` — `forloop/` (sugar)
 

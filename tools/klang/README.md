@@ -48,8 +48,8 @@ python -I ../tools/klang/klang-browser.py --run -d func-hm tests.kl
 cd ../minits-project1-func-dynamic
 python -I ../tools/klang/klang-browser.py --run -d func-dynamic tests.kl
 
-cd ../minits-hope-twists/ternary
-python -I ../../tools/klang/klang-browser.py --run -d pure-hm tests.kl
+cd ../minits-hope-twists/pure-hm/ternary
+python -I ../../../tools/klang/klang-browser.py --run -d pure-hm tests.kl
 ```
 
 Other options are the same as for `klangb`: leave out `--run` to only compile, and use `--emit-ir` to print the IR. `-o FILE` writes the generated Python.

@@ -1,0 +1,190 @@
+# syntax.kl -- MiniTS abstract syntax trees.
+include "util.kl";
+
+# ---------------------------------------------------------------------
+# Type annotations exactly as written in the source.
+#
+# Function-type parameter names are kept only so that the checker
+# can reject duplicates; they carry no meaning otherwise. The checker turns a
+# TypeExpr into a semantic Type (see checker.kl).
+
+#
+# Named things (function-type parameters, record fields) are stored as
+# `Pair name thing`. Using the generic Pair from util.kl means no two type
+# declarations refer to each other.
+
+type TypeExpr
+  = TyNumber
+  | TyBoolean
+  | TyString
+  | TyNull
+  | TyFun [Pair String TypeExpr] TypeExpr   # (x: T1, y: T2) => R
+  | TyRecord [Pair String TypeExpr];        # { f: T1; g: T2; }
+
+# ---------------------------------------------------------------------
+# Expressions
+
+type UnOp
+  = OpNeg                        # -e
+  | OpNot;                       # !e
+
+type BinOp
+  = OpAdd | OpSub | OpMul | OpDiv
+  | OpLt | OpLe | OpGt | OpGe
+  | OpEq | OpNeq                 # === and !==
+  | OpAnd | OpOr;                # && and || (short-circuit in eval.kl)
+
+type Expr
+  = ENum Float                   # 3, 2.5
+  | EStr String                  # "decoded contents"
+  | EBool Bool                   # true, false
+  | ENull                        # null
+  | EVar String                  # x
+  | EAssign String Expr          # x = e   (only identifiers can be assigned)
+  | EUnary UnOp Expr
+  | EBinary BinOp Expr Expr
+  | EFun [Pair String TypeExpr] TypeExpr Expr   # (x: T, ...): R => body
+  | ECall Expr [Expr]            # f(a, b)
+  | EField Expr String           # e.f
+  | ERecord [Pair String Expr];  # { f: e, g: e }   fields in source order
+
+# ---------------------------------------------------------------------
+# Statements and programs
+
+type Stmt
+  = SLet String (Option TypeExpr) Expr   # let x: T = e;   (annotation optional)
+  | SExpr Expr                           # e;
+  | SBlock [Stmt]                        # { s* }
+  | SIf Expr Stmt Stmt                   # if (e) {..} else {..}; both are SBlock
+  | SWhile Expr Stmt                     # while (e) {..};      body is an SBlock
+  | SBreak                               # TWIST: break;
+  | SContinue;                           # TWIST: continue;
+
+type Program
+  = Program [Stmt];
+
+# ---------------------------------------------------------------------
+# Pretty printers (S-expression style). Used by tests and for debugging.
+
+# unOpText :: UnOp -> String
+let unOpText op =
+  match op {
+    OpNeg => "-";
+    OpNot => "!";
+  };
+
+# binOpText :: BinOp -> String
+let binOpText op =
+  match op {
+    OpAdd => "+";
+    OpSub => "-";
+    OpMul => "*";
+    OpDiv => "/";
+    OpLt => "<";
+    OpLe => "<=";
+    OpGt => ">";
+    OpGe => ">=";
+    OpEq => "===";
+    OpNeq => "!==";
+    OpAnd => "&&";
+    OpOr => "||";
+  };
+
+# escapeText :: String -> String  (re-escape a decoded string for display)
+let escapeText s =
+  let go i acc =
+    if i >= str_len s then
+      str_join (listReverse acc)
+    else
+      let c = str_at s i in
+      let e =
+        if c == "\"" then "\\\""
+        else if c == "\\" then "\\\\"
+        else if c == "\n" then "\\n"
+        else if c == "\r" then "\\r"
+        else if c == "\t" then "\\t"
+        else c
+      in
+        go (i + 1) (e :: acc)
+  in
+    go 0 [];
+
+# showTypeExpr :: TypeExpr -> String  (MiniTS concrete syntax)
+let showTypeExpr t =
+  match t {
+    TyNumber => "number";
+    TyBoolean => "boolean";
+    TyString => "string";
+    TyNull => "null";
+    TyFun params ret =>
+      str_join [
+        "(",
+        joinWith ", "
+          (listMap (fn p => match p { Pair n pt => str_join [n, ": ", showTypeExpr pt]; }) params),
+        ") => ",
+        showTypeExpr ret
+      ];
+    TyRecord fields =>
+      str_join [
+        "{ ",
+        str_join
+          (listMap (fn f => match f { Pair n ft => str_join [n, ": ", showTypeExpr ft, "; "]; }) fields),
+        "}"
+      ];
+  };
+
+# showExpr :: Expr -> String
+let showExpr e =
+  match e {
+    ENum n => floatToText n;
+    EStr s => str_join ["\"", escapeText s, "\""];
+    EBool b => if b then "true" else "false";
+    ENull => "null";
+    EVar x => x;
+    EAssign x rhs => str_join ["(= ", x, " ", showExpr rhs, ")"];
+    EUnary op inner => str_join ["(", unOpText op, " ", showExpr inner, ")"];
+    EBinary op l r => str_join ["(", binOpText op, " ", showExpr l, " ", showExpr r, ")"];
+    EFun params ret body =>
+      str_join [
+        "(fn [",
+        joinWith ", "
+          (listMap (fn p => match p { Pair n pt => str_join [n, ": ", showTypeExpr pt]; }) params),
+        "] ",
+        showTypeExpr ret,
+        " ",
+        showExpr body,
+        ")"
+      ];
+    ECall f args =>
+      str_join ["(call ", showExpr f, " [", joinWith ", " (listMap showExpr args), "])"];
+    EField target name => str_join ["(. ", showExpr target, " ", name, ")"];
+    ERecord fields =>
+      str_join [
+        "{",
+        joinWith ", "
+          (listMap (fn f => match f { Pair n fe => str_join [n, ": ", showExpr fe]; }) fields),
+        "}"
+      ];
+  };
+
+# showStmt :: Stmt -> String
+let showStmt s =
+  match s {
+    SLet x ann init =>
+      match ann {
+        None => str_join ["(let ", x, " ", showExpr init, ")"];
+        Some t => str_join ["(let ", x, ": ", showTypeExpr t, " ", showExpr init, ")"];
+      };
+    SExpr e => str_join ["(expr ", showExpr e, ")"];
+    SBlock body => str_join ["{", joinWith " " (listMap showStmt body), "}"];
+    SIf c thenB elseB => str_join ["(if ", showExpr c, " ", showStmt thenB, " ", showStmt elseB, ")"];
+    SWhile c body => str_join ["(while ", showExpr c, " ", showStmt body, ")"];
+    SBreak => "(break)";
+    SContinue => "(continue)";
+  };
+
+# showProgram :: Program -> String
+let showProgram p =
+  match p {
+    Program stmts => joinWith " " (listMap showStmt stmts);
+  };
