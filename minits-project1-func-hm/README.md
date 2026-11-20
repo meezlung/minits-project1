@@ -8,6 +8,8 @@ It parses source text directly, type-checks the whole program, and then runs it.
 1. Select the **`func-hm`** dialect (also recorded in `dialect.txt`).
 2. Run **`tests.kl`**. It includes every other file through `minits.kl`.
 
+   **Note:** the program is too large for the KLang browser bridge (`klangb`, or **KLang: Run Current File**). The compiled program is over the bridge's 1 MiB message limit, so the run ends with `Bridge messages must not exceed 1048576 UTF-8 bytes` and prints nothing. Instead, run it with the KLang compiler directly, which is kept in this repo: `python -I ../tools/klang/klang-browser.py --run -d func-hm tests.kl` (about 40 seconds; see `../tools/klang/README.md`). See `HOPE-TWISTS.md`, section 0.
+
 The last line of `tests.kl` calls `report allTests 0 0;`. That prints one line per test, then a summary:
 
 ```
@@ -25,7 +27,7 @@ Each file includes the one before it, so nothing is defined twice:
 
 | File | Contents |
 |---|---|
-| `util.kl` | `Option`, `Result a e` (success first), `Pair`, list helpers, `floatToText` |
+| `util.kl` | `Result a e` (success first), `Pair`, list helpers, `floatToText` (`Option` is built into KLang) |
 | `syntax.kl` | AST: `TypeExpr`, `UnOp`, `BinOp`, `Expr`, `Stmt`, `Program`; printers |
 | `parser.kl` | Parser type, combinators, character and text parsers, the grammar, `parse` |
 | `checker.kl` | `Type`, `TypeError`, `TypeEnv`, `checkExpr`, `checkStmt`, `checkProgram` |
@@ -86,7 +88,8 @@ match run "let n = 5; let r = 1; while (n > 1) { r = r * n; n = n - 1; }" {
 
 ## Assumptions
 
-- **`Option`, `Result` and `Pair` are defined in `util.kl`.** Lab 5's `common.kl` defined `Option` in an HM dialect, so redefining it should be fine. If your KLang build already provides `Option` and rejects the redefinition, delete those three lines from `util.kl`.
+- **`Option` comes from KLang itself; `Result` and `Pair` are defined in `util.kl`.** KLang v12 has a built-in `Option a = None | Some a`, and declaring it again is a "duplicate type declaration" compile error. `Result` and `Pair` are not built in.
 - **No mutually recursive type declarations.** Named fields and parameters are stored as `Pair name thing`, so every type only refers to itself or to earlier types.
 - **Recursion uses `letrec`, as in Lectures 10–11.** Mutual recursion is avoided by passing the recursive parser as an argument, as in Lecture 11.
 - **Number literals are built from their digits with `Float` arithmetic.** Literals that overflow to infinity are rejected.
+- **MiniTS numbers are KLang `Float`s, so comparisons use the Float operators `<. <=. >. >=.`** (in `eval.kl`'s `delta2` and in `util.kl`'s `floatToText`). KLang's plain `< <= > >=` are Int-only.
