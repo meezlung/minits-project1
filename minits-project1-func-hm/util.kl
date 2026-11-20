@@ -4,10 +4,8 @@
 # defined twice):
 #   util.kl -> syntax.kl -> parser.kl -> checker.kl -> eval.kl -> minits.kl -> tests.kl
 
-# Option a: an optional value.
-type Option a
-  = None
-  | Some a;
+# Option a (None | Some a) is built into KLang v12: declaring it again is a
+# "duplicate type declaration" compile error, so it is NOT defined here.
 
 # Result a e: success type first, error type second (as in the spec).
 type Result a e
@@ -116,7 +114,7 @@ let isFiniteFloat x =
 let floatToText x =
   if isFiniteFloat x then
     (if int_to_float (float_to_int x) == x then
-       (if x < 0.0 then
+       (if x <. 0.0 then
           str_concat "-" (int_to_string (0 - float_to_int x))
         else
           int_to_string (float_to_int x))

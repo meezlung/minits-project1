@@ -1,0 +1,698 @@
+# tests.kl -- MiniTS test suite (func-dynamic: run this file directly).
+#
+# Each test is a label and a Bool. `main` prints PASS/FAIL per test and a
+# summary line at the end.
+include "minits.kl";
+
+type Test
+  = Test String Bool;
+
+# =====================================================================
+# Helpers
+# =====================================================================
+
+# globalValue :: String -> String -> Option Value   (run src, read a global)
+let globalValue src name =
+  match run src {
+    Err _ => None;
+    Ok execution => getGlobal execution name;
+  };
+
+let numIs src name n =
+  match globalValue src name {
+    Some (VNum m) => m == n;
+    _ => false;
+  };
+
+let strIs src name s =
+  match globalValue src name {
+    Some (VStr t) => t == s;
+    _ => false;
+  };
+
+let boolIs src name b =
+  match globalValue src name {
+    Some (VBool c) => c == b;
+    _ => false;
+  };
+
+let nullIs src name =
+  match globalValue src name {
+    Some VNull => true;
+    _ => false;
+  };
+
+# valueShows: compare a global's displayed value (records, functions)
+let valueShows src name text =
+  match globalValue src name {
+    Some v => showValue v == text;
+    None => false;
+  };
+
+# notGlobal: the program runs, and `name` is not a top-level binding
+let notGlobal src name =
+  match run src {
+    Err _ => false;
+    Ok execution =>
+      match getGlobal execution name {
+        None => true;
+        Some _ => false;
+      };
+  };
+
+# runsOk: the whole pipeline succeeds
+let runsOk src =
+  match run src {
+    Ok _ => true;
+    Err _ => false;
+  };
+
+# globalsAre: compare every global at once, e.g. "x = 7, a = false"
+let globalsAre src text =
+  match run src {
+    Ok execution => showGlobals execution == text;
+    Err _ => false;
+  };
+
+# --- parse-level helpers
+
+let parsesTo src text =
+  match parse src {
+    Ok prog => showProgram prog == text;
+    Err _ => false;
+  };
+
+let exprParsesTo src text =
+  match parseExpr src {
+    Ok e => showExpr e == text;
+    Err _ => false;
+  };
+
+let parseFails src =
+  match parse src {
+    Ok _ => false;
+    Err _ => true;
+  };
+
+# parseFailsAt: rejected with the error reported at line:column
+let parseFailsAt src line col =
+  match parse src {
+    Ok _ => false;
+    Err (ParseError _ l c _) => (l == line) && (c == col);
+  };
+
+let parseOk src =
+  match parse src {
+    Ok _ => true;
+    Err _ => false;
+  };
+
+# --- type-level helpers
+
+let typeErrorKind e =
+  match e {
+    UnboundVariable _ => "UnboundVariable";
+    DuplicateDeclaration _ => "DuplicateDeclaration";
+    DuplicateField _ => "DuplicateField";
+    DuplicateParameter _ => "DuplicateParameter";
+    AnnotationMismatch _ _ _ => "AnnotationMismatch";
+    AssignmentMismatch _ _ _ => "AssignmentMismatch";
+    ReturnTypeMismatch _ _ => "ReturnTypeMismatch";
+    InvalidOperand _ _ => "InvalidOperand";
+    InvalidOperands _ _ _ => "InvalidOperands";
+    NonBooleanCondition _ => "NonBooleanCondition";
+    NotAFunction _ => "NotAFunction";
+    ArityMismatch _ _ => "ArityMismatch";
+    ArgumentMismatch _ _ _ => "ArgumentMismatch";
+    NotARecord _ => "NotARecord";
+    MissingField _ _ => "MissingField";
+  };
+
+# typeErrorIs: run fails at the type-checking stage with this kind of error
+let typeErrorIs src kindName =
+  match run src {
+    Err (TypeFailure e) => typeErrorKind e == kindName;
+    _ => false;
+  };
+
+let typeChecks src =
+  match parse src {
+    Err _ => false;
+    Ok prog =>
+      match checkProgram prog {
+        Ok _ => true;
+        Err _ => false;
+      };
+  };
+
+# globalTypeIs: the checker's type for a top-level name, in MiniTS syntax
+let globalTypeIs src name text =
+  match parse src {
+    Err _ => false;
+    Ok prog =>
+      match checkProgramEnv prog {
+        Err _ => false;
+        Ok env =>
+          match lookupType env name {
+            None => false;
+            Some t => showType t == text;
+          };
+      };
+  };
+
+# typesEqual: are the two annotations (as `let` annotations) the same type?
+let typesEqual a b =
+  match parse (str_join ["let a: ", a, " = null; let b: ", b, " = null;"]) {
+    Err _ => false;
+    Ok (Program (SLet _ (Some ta) _ :: SLet _ (Some tb) _ :: [])) =>
+      match resolveType ta {
+        Err _ => false;
+        Ok x =>
+          match resolveType tb {
+            Err _ => false;
+            Ok y => typeEq x y;
+          };
+      };
+    Ok _ => false;
+  };
+
+# --- runtime-level helpers
+
+let divisionByZero src =
+  match run src {
+    Err (RuntimeFailure DivisionByZero) => true;
+    _ => false;
+  };
+
+# execInvalid: execute an AST directly (no type checking) and expect a
+# defensive InvalidRuntimeOperation error.
+let execInvalid stmts =
+  match execProgram (Program stmts) {
+    Err (InvalidRuntimeOperation _) => true;
+    _ => false;
+  };
+
+let num n =
+  ENum n;
+
+# =====================================================================
+# 1. Spec examples (Item 1c and Item 6a)
+# =====================================================================
+
+let specExamples = [
+  Test "1c factorial loop: n = 1, result = 120"
+    (globalsAre
+      "let n: number = 5;\nlet result = 1;\nwhile (n > 1) {\n  result = result * n;\n  n = n - 1;\n}"
+      "n = 1, result = 120"),
+
+  Test "1c counter closure: counter = 2, a = 1, b = 2"
+    (numIs "let counter = 0; let next = (): number => (counter = counter + 1); let a = next(); let b = next();" "counter" 2.0
+      && numIs "let counter = 0; let next = (): number => (counter = counter + 1); let a = next(); let b = next();" "a" 1.0
+      && numIs "let counter = 0; let next = (): number => (counter = counter + 1); let a = next(); let b = next();" "b" 2.0),
+
+  Test "1c makeAdder: result = 15"
+    (numIs
+      "let makeAdder =\n  (n: number): (x: number) => number =>\n    (x: number): number => x + n;\nlet addFive = makeAdder(5);\nlet result = addFive(10);"
+      "result" 15.0),
+
+  Test "1c student record type is { name: string; year: number; }"
+    (globalTypeIs
+      "let student = { name: \"Alice\", year: 2026 }; let name = student.name; let nextYear = student.year + 1;"
+      "student" "{ name: string; year: number; }"),
+
+  Test "1c student fields: name = \"Alice\", nextYear = 2027"
+    (strIs "let student = { name: \"Alice\", year: 2026 }; let name = student.name; let nextYear = student.year + 1;" "name" "Alice"
+      && numIs "let student = { name: \"Alice\", year: 2026 }; let name = student.name; let nextYear = student.year + 1;" "nextYear" 2027.0),
+
+  Test "6a escaping closure: result = 42"
+    (numIs "let f = (): number => 0;\n{\n  let x = 41;\n  f = (): number => x + 1;\n}\nlet result = f();" "result" 42.0),
+
+  Test "6a escaping closure: x is not a global"
+    (notGlobal "let f = (): number => 0;\n{\n  let x = 41;\n  f = (): number => x + 1;\n}\nlet result = f();" "x"),
+
+  Test "6a lexical scope and shadowing: x = 10, result = 10"
+    (globalsAre
+      "let x = 10;\nlet f = (): number => x;\n{\n  let x = 20;\n  x = x + 1;\n}\nlet result = f();"
+      "x = 10, f = <function>, result = 10"),
+
+  Test "6a passing functions as arguments: result = 12"
+    (numIs
+      "let applyTwice = (f: (x: number) => number, x: number): number => f(f(x));\nlet increment = (n: number): number => n + 1;\nlet result = applyTwice(increment, 10);"
+      "result" 12.0),
+
+  Test "6a composition and chained calls: result = 12"
+    (numIs
+      "let compose =\n  (f: (x: number) => number, g: (x: number) => number): (x: number) => number =>\n    (x: number): number => f(g(x));\nlet double = (x: number): number => x * 2;\nlet increment = (x: number): number => x + 1;\nlet result = compose(double, increment)(5);"
+      "result" 12.0),
+
+  Test "6a independent mutable closure state: a = 1, b = 2, c = 11, d = 3"
+    (globalsAre
+      "let makeCounter = (start: number): () => number =>\n  (): number => (start = start + 1);\nlet first = makeCounter(0);\nlet second = makeCounter(10);\nlet a = first();\nlet b = first();\nlet c = second();\nlet d = first();"
+      "makeCounter = <function>, first = <function>, second = <function>, a = 1, b = 2, c = 11, d = 3"),
+
+  Test "6a parameter assignment does not reassign the caller's variable: n = 5, result = 6"
+    (globalsAre
+      "let bump = (x: number): number => (x = x + 1);\nlet n = 5;\nlet result = bump(n);"
+      "bump = <function>, n = 5, result = 6"),
+
+  Test "6a functions stored in records: result = 16, message = \"Hello, MiniTS\""
+    (numIs
+      "let operations = {\n  square: (x: number): number => x * x,\n  greet: (name: string): string => \"Hello, \" + name\n};\nlet result = operations.square(4);\nlet message = operations.greet(\"MiniTS\");"
+      "result" 16.0
+      && strIs
+      "let operations = {\n  square: (x: number): number => x * x,\n  greet: (name: string): string => \"Hello, \" + name\n};\nlet result = operations.square(4);\nlet message = operations.greet(\"MiniTS\");"
+      "message" "Hello, MiniTS"),
+
+  Test "6a short-circuit effects: x = 7, a = false, b = c = d = true"
+    (globalsAre
+      "let x = 0;\nlet a = false && ((x = 1) === 1);\nlet b = true || ((x = 2) === 2);\nlet c = true && ((x = x + 3) === 3);\nlet d = false || ((x = x + 4) === 7);"
+      "x = 7, a = false, b = true, c = true, d = true"),
+
+  Test "6a left-to-right arguments and records: p = {1,2}, r = {3,4}, x = 4"
+    (globalsAre
+      "let x = 0;\nlet pair = (a: number, b: number): { first: number; second: number; } =>\n  ({ first: a, second: b });\nlet p = pair(x = x + 1, x = x + 1);\nlet r = { first: (x = x + 1), second: (x = x + 1) };"
+      "x = 4, pair = <function>, p = { first: 1, second: 2 }, r = { first: 3, second: 4 }"),
+
+  Test "6a effects in a false loop condition: x = 3"
+    (numIs "let x = 0;\nwhile ((x = x + 1) < 3) {\n}" "x" 3.0)
+];
+
+# =====================================================================
+# 2. Sample rejected programs (Item 6b), each run separately
+# =====================================================================
+
+let specRejected = [
+  Test "6b assigning a string to a number variable"
+    (typeErrorIs "let x = 10;\nx = \"hello\";" "AssignmentMismatch"),
+  Test "6b body type does not match the declared return type"
+    (typeErrorIs "let f = (x: number): boolean => x + 1;" "ReturnTypeMismatch"),
+  Test "6b non-boolean if condition"
+    (typeErrorIs "if (1) {}" "NonBooleanCondition"),
+  Test "6b duplicate declaration in one scope"
+    (typeErrorIs "let x = 1;\nlet x = 2;" "DuplicateDeclaration"),
+  Test "6b argument of the wrong type"
+    (typeErrorIs "let f = (x: number): number => x;\nlet result = f(true);" "ArgumentMismatch"),
+  Test "6b record with an extra field does not match the annotation"
+    (typeErrorIs "let p: { x: number; } = { x: 1, y: 2 };" "AnnotationMismatch")
+];
+
+# =====================================================================
+# 3. Parser: text conventions, grammar, precedence
+# =====================================================================
+
+let parserTests = [
+  # --- whitespace and comments
+  Test "empty program" (parsesTo "" ""),
+  Test "program of only whitespace and comments" (parsesTo "  \n\t// nothing here\n   // still nothing" ""),
+  Test "leading and trailing whitespace and comments"
+    (parsesTo "\n  // leading comment\n  let x = 1;  \n// trailing comment\n\n" "(let x 1)"),
+  Test "comment at end of input without a final line break"
+    (parsesTo "let x = 1; // the end" "(let x 1)"),
+  Test "comments between every grammar element"
+    (parsesTo "let // a\n x // b\n : // c\n number // d\n = // e\n 1 // f\n ; // g" "(let x: number 1)"),
+  Test "// inside a string is not a comment"
+    (strIs "let s = \"// not a comment\";" "s" "// not a comment"),
+  Test "tabs, CR and LF all count as whitespace"
+    (parsesTo "let\tx\r\n=\t1;\r\n" "(let x 1)"),
+
+  # --- keywords and identifiers
+  Test "keyword-prefix identifier: letter" (parsesTo "let letter = 1;" "(let letter 1)"),
+  Test "keyword-prefix identifiers: iffy, whileLoop, nullable, numbers, trueish"
+    (parseOk "let iffy = 1; let whileLoop = 2; let nullable = 3; let numbers = 4; let trueish = 5; let strings = 6; let elsewhere = 7;"),
+  Test "letx is an identifier (assignment), not let x"
+    (parsesTo "letx = 3;" "(expr (= letx 3))"),
+  Test "reserved word as a variable name is rejected" (parseFails "let let = 1;"),
+  Test "type name as a variable name is rejected" (parseFails "let number = 1;"),
+  Test "reserved word as a parameter name is rejected" (parseFails "let f = (string: number): number => 1;"),
+  Test "reserved word as a field name is rejected" (parseFails "let r = { null: 1 };"),
+  Test "identifiers with digits and underscores" (parsesTo "let _a1_B2 = 0;" "(let _a1_B2 0)"),
+
+  # --- literals
+  Test "integer and decimal numbers" (exprParsesTo "12 + 3.5" "(+ 12 3.5)"),
+  Test "leading minus is a unary operator" (exprParsesTo "-5" "(- 5)"),
+  Test "a dot without digits after it is not part of a number" (parseFails "let x = 1.;"),
+  Test "true, false, null" (exprParsesTo "true || false === null" "(|| true (=== false null))"),
+  Test "string escapes decode \\\" \\\\ \\n \\r \\t"
+    (strIs "let s = \"q\\\"b\\\\n\\nr\\rt\\t\";" "s" "q\"b\\n\nr\rt\t"),
+  Test "unknown escape is rejected" (parseFails "let s = \"a\\qb\";"),
+  Test "unknown escape reports the backslash position 1:11" (parseFailsAt "let s = \"a\\qb\";" 1 11),
+  Test "unescaped line break in a string is rejected" (parseFailsAt "let s = \"ab\ncd\";" 1 12),
+  Test "unterminated string is rejected at its opening quote" (parseFailsAt "let s = \"abc" 1 9),
+  Test "unterminated string ending in a backslash" (parseFails "let s = \"abc\\"),
+  Test "number literal that overflows to infinity is rejected"
+    (parseFails
+      (str_join [
+        "let big = 1",
+        str_join (listMap (fn _ => "0000000000") [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,
+                                                  18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]),
+        ";"
+      ])),
+  Test "a large but finite number literal is accepted" (numIs "let big = 1000000000000000000000;" "big" 1000000000000000000000.0),
+
+  # --- precedence and associativity
+  Test "multiplication binds tighter than addition" (exprParsesTo "1 + 2 * 3" "(+ 1 (* 2 3))"),
+  Test "subtraction is left-associative" (exprParsesTo "1 - 2 - 3" "(- (- 1 2) 3)"),
+  Test "division is left-associative" (exprParsesTo "8 / 4 / 2" "(/ (/ 8 4) 2)"),
+  Test "assignment is right-associative" (exprParsesTo "x = y = 3" "(= x (= y 3))"),
+  Test "comparison binds tighter than equality" (exprParsesTo "a === b < c" "(=== a (< b c))"),
+  Test "&& binds tighter than ||" (exprParsesTo "a || b && c" "(|| a (&& b c))"),
+  Test "equality binds tighter than &&" (exprParsesTo "a === b && c !== d" "(&& (=== a b) (!== c d))"),
+  Test "unary binds tighter than binary" (exprParsesTo "-x * !y" "(* (- x) (! y))"),
+  Test "nested unary operators" (exprParsesTo "!!a" "(! (! a))"),
+  Test "double minus is two negations" (exprParsesTo "--a" "(- (- a))"),
+  Test "parentheses override precedence" (exprParsesTo "(1 + 2) * 3" "(* (+ 1 2) 3)"),
+  Test "assignment inside a larger expression needs parentheses" (exprParsesTo "(x = 1) + 2" "(+ (= x 1) 2)"),
+  Test "chained postfix in source order: f(1).x" (exprParsesTo "f(1).x" "(. (call f [1]) x)"),
+  Test "chained postfix: a.b(c)(d).e" (exprParsesTo "a.b(c)(d).e" "(. (call (call (. a b) [c]) [d]) e)"),
+  Test "postfix binds tighter than unary" (exprParsesTo "-f(x)" "(- (call f [x]))"),
+  Test "zero-argument call" (exprParsesTo "f()" "(call f [])"),
+  Test "only an identifier may be assigned" (parseFails "f(1) = 2;"),
+  Test "field targets cannot be assigned" (parseFails "let r = { x: 1 }; r.x = 2;"),
+
+  # --- operators and longest match
+  Test "adjacent multi-character operators without spaces"
+    (exprParsesTo "a<=b&&c>=d||e===f&&g!==h" "(|| (&& (<= a b) (>= c d)) (&& (=== e f) (!== g h)))"),
+  Test "< and > without spaces" (exprParsesTo "a<b===c>d" "(=== (< a b) (> c d))"),
+  Test "split === (= = =) is rejected" (parseFails "let x = 1; let b = x = = = 1;"),
+  Test "== is not a MiniTS operator" (parseFails "let x = 1; let b = x == 1;"),
+  Test "= = is rejected" (parseFails "let x = 1; x = = 2;"),
+  Test "==== is rejected" (parseFails "let b = 1 ==== 1;"),
+  Test "& alone is rejected" (parseFails "let b = true & false;"),
+  Test "invalid character is rejected with its position" (parseFailsAt "let x = 1;\nlet y = @;" 2 9),
+  Test "# is not a comment in MiniTS" (parseFailsAt "let x = 1 # 2;" 1 11),
+  Test "trailing non-comment text is rejected" (parseFailsAt "let x = 1; )" 1 12),
+  Test "missing semicolon reported where it was expected" (parseFailsAt "let x = 1\nlet y = 2;" 2 1),
+  Test "error deep in a call argument is reported at the argument" (parseFailsAt "f(1, @);" 1 6),
+
+  # --- functions: arrow vs parenthesized expression (backtracking)
+  Test "arrow function with typed parameters"
+    (exprParsesTo "(x: number, y: string): number => x" "(fn [x: number, y: string] number x)"),
+  Test "zero-parameter arrow function" (exprParsesTo "(): number => 1" "(fn [] number 1)"),
+  Test "arrow function without spaces" (exprParsesTo "(x:number):number=>x" "(fn [x: number] number x)"),
+  Test "parenthesized expression after a failed arrow attempt" (exprParsesTo "(x) * 2" "(* x 2)"),
+  Test "parenthesized sum after a failed arrow attempt" (exprParsesTo "(a + b)" "(+ a b)"),
+  Test "immediately invoked arrow" (exprParsesTo "((): number => 5)()" "(call (fn [] number 5) [])"),
+  Test "arrow returning an arrow (curried)"
+    (exprParsesTo "(n: number): (x: number) => number => (x: number): number => x + n"
+      "(fn [n: number] (x: number) => number (fn [x: number] number (+ x n)))"),
+  Test "arrow body record literal must be parenthesized"
+    (parseFails "let f = (): { x: number; } => { x: 1 };"),
+  Test "parenthesized record literal as an arrow body"
+    (exprParsesTo "(): { x: number; } => ({ x: 1 })" "(fn [] { x: number; } {x: 1})"),
+
+  # --- types
+  Test "function type with named parameters"
+    (parsesTo "let f: (a: number, b: string) => boolean = g;" "(let f: (a: number, b: string) => boolean g)"),
+  Test "zero-parameter function type" (parsesTo "let f: () => null = g;" "(let f: () => null g)"),
+  Test "record type with trailing semicolon" (parsesTo "let r: { x: number; y: string; } = g;" "(let r: { x: number; y: string; } g)"),
+  Test "record type without trailing semicolon" (parsesTo "let r: { x: number; y: string } = g;" "(let r: { x: number; y: string; } g)"),
+  Test "empty record type" (parsesTo "let r: {} = g;" "(let r: { } g)"),
+  Test "record type fields need ; not ," (parseFails "let r: { x: number, y: number } = g;"),
+  Test "nested function and record types"
+    (parsesTo "let h: (f: (x: number) => number) => { g: () => string; } = k;"
+      "(let h: (f: (x: number) => number) => { g: () => string; } k)"),
+
+  # --- records
+  Test "record literal fields keep source order" (exprParsesTo "{ b: 1, a: 2 }" "{b: 1, a: 2}"),
+  Test "empty record literal" (exprParsesTo "{}" "{}"),
+  Test "record literal fields use , not ;" (parseFails "let r = { x: 1; y: 2 };"),
+
+  # --- statements
+  Test "if without else is if with an empty else"
+    (parsesTo "if (c) { x; }" "(if c {(expr x)} {})"),
+  Test "if with else" (parsesTo "if (c) { x; } else { y; }" "(if c {(expr x)} {(expr y)})"),
+  Test "if requires a block, not a single statement" (parseFails "if (c) x;"),
+  Test "else if is not part of the grammar" (parseFails "if (a) {} else if (b) {}"),
+  Test "while loop" (parsesTo "while (c) { x = 1; }" "(while c {(expr (= x 1))})"),
+  Test "empty blocks and nested blocks" (parsesTo "{} { {} }" "{} {{}}"),
+  Test "a leading { at statement position starts a block" (parseFails "{ x: 1 };"),
+  Test "parenthesized record literal as an expression statement" (parsesTo "({ x: 1 });" "(expr {x: 1})"),
+  Test "missing closing brace" (parseFails "while (true) { let x = 1;"),
+  Test "let requires an initializer" (parseFails "let x;"),
+  Test "let with a type annotation" (parsesTo "let x: string = \"a\";" "(let x: string \"a\")")
+];
+
+# =====================================================================
+# 4. Type checker
+# =====================================================================
+
+let checkerTests = [
+  # --- literals, variables, assignment
+  Test "T-Number, T-String, T-Bool, T-Null"
+    (globalTypeIs "let a = 1;" "a" "number" && globalTypeIs "let a = \"s\";" "a" "string"
+      && globalTypeIs "let a = true;" "a" "boolean" && globalTypeIs "let a = null;" "a" "null"),
+  Test "T-Var: unbound variable" (typeErrorIs "let a = b;" "UnboundVariable"),
+  Test "T-Assign has the variable's type" (globalTypeIs "let x = 1; let y = (x = 2);" "y" "number"),
+  Test "assignment to an undeclared variable" (typeErrorIs "y = 1;" "UnboundVariable"),
+  Test "null has only type null" (typeErrorIs "let x = 1; x = null;" "AssignmentMismatch"),
+  Test "a null variable can be reassigned null" (typeChecks "let x = null; x = null;"),
+
+  # --- operators
+  Test "T-Arith: number - number" (globalTypeIs "let a = 3 - 1;" "a" "number"),
+  Test "T-Concat: string + string" (globalTypeIs "let a = \"x\" + \"y\";" "a" "string"),
+  Test "+ rejects number + string (no implicit conversion)" (typeErrorIs "let a = 1 + \"x\";" "InvalidOperands"),
+  Test "- rejects strings" (typeErrorIs "let a = \"x\" - \"y\";" "InvalidOperands"),
+  Test "* rejects booleans" (typeErrorIs "let a = true * 2;" "InvalidOperands"),
+  Test "T-Neg rejects strings" (typeErrorIs "let a = -\"x\";" "InvalidOperand"),
+  Test "T-Not rejects numbers" (typeErrorIs "let a = !1;" "InvalidOperand"),
+  Test "T-Compare gives boolean" (globalTypeIs "let a = 1 <= 2;" "a" "boolean"),
+  Test "T-Compare rejects strings" (typeErrorIs "let a = \"a\" < \"b\";" "InvalidOperands"),
+  Test "chained comparison 1 < 2 < 3 is ill typed" (typeErrorIs "let a = 1 < 2 < 3;" "InvalidOperands"),
+  Test "equality on each primitive type"
+    (typeChecks "let a = 1 === 2; let b = \"a\" !== \"b\"; let c = true === false; let d = null === null;"),
+  Test "equality on different primitive types is rejected" (typeErrorIs "let a = 1 === \"1\";" "InvalidOperands"),
+  Test "equality on records is rejected" (typeErrorIs "let a = {} === {};" "InvalidOperands"),
+  Test "equality on functions is rejected"
+    (typeErrorIs "let f = (): number => 1; let a = f === f;" "InvalidOperands"),
+  Test "T-Logic rejects numbers" (typeErrorIs "let a = 1 && true;" "InvalidOperands"),
+  Test "both operands of || are checked even if skipped at run time"
+    (typeErrorIs "let a = true || (1 + \"x\" === 2);" "InvalidOperands"),
+
+  # --- functions
+  Test "T-Fun gives a function type" (globalTypeIs "let f = (x: number, s: string): boolean => true;" "f" "(p1: number, p2: string) => boolean"),
+  Test "duplicate parameter names" (typeErrorIs "let f = (x: number, x: number): number => x;" "DuplicateParameter"),
+  Test "parameters shadow outer names" (typeChecks "let x = \"s\"; let f = (x: number): number => x;"),
+  Test "closure sees an outer variable declared before it" (typeChecks "let y = 1; let f = (): number => y;"),
+  Test "function cannot see a variable declared after it" (typeErrorIs "let f = (): number => y; let y = 1;" "UnboundVariable"),
+  Test "T-App with zero arguments" (globalTypeIs "let f = (): string => \"a\"; let r = f();" "r" "string"),
+  Test "calling a non-function" (typeErrorIs "let x = 1; let y = x(2);" "NotAFunction"),
+  Test "too many arguments" (typeErrorIs "let f = (x: number): number => x; let y = f(1, 2);" "ArityMismatch"),
+  Test "too few arguments (including zero)" (typeErrorIs "let f = (x: number): number => x; let y = f();" "ArityMismatch"),
+  Test "higher-order argument with the wrong function type"
+    (typeErrorIs "let ap = (f: (x: number) => number): number => f(1); let g = (s: string): number => 1; let r = ap(g);" "ArgumentMismatch"),
+  Test "function-type parameter names are documentation only"
+    (typeChecks "let f: (a: number) => number = (b: number): number => b;"),
+  Test "function types compare return types exactly"
+    (typeErrorIs "let f: (a: number) => string = (b: number): number => b;" "AnnotationMismatch"),
+  Test "duplicate parameter names in function type syntax"
+    (typeErrorIs "let f: (a: number, a: number) => number = (x: number, y: number): number => x;" "DuplicateParameter"),
+  Test "recursion through assignment to a declared function variable"
+    (typeChecks "let f = (n: number): number => 0; f = (n: number): number => f(n - 1);"),
+
+  # --- records
+  Test "T-Record and T-Field" (globalTypeIs "let r = { a: 1, b: \"x\" }; let v = r.b;" "v" "string"),
+  Test "empty record literal" (globalTypeIs "let r = {};" "r" "{ }"),
+  Test "empty record annotation" (typeChecks "let r: {} = {};"),
+  Test "duplicate fields in a record literal" (typeErrorIs "let r = { a: 1, a: 2 };" "DuplicateField"),
+  Test "duplicate fields in a record type" (typeErrorIs "let r: { a: number; a: number; } = { a: 1 };" "DuplicateField"),
+  Test "missing field" (typeErrorIs "let r = { a: 1 }; let v = r.b;" "MissingField"),
+  Test "field access on a non-record" (typeErrorIs "let n = 1; let v = n.a;" "NotARecord"),
+  Test "record types ignore field order" (typesEqual "{ x: number; y: string; }" "{ y: string; x: number; }"),
+  Test "record annotation with reordered fields" (typeChecks "let p: { x: number; y: string; } = { y: \"a\", x: 1 };"),
+  Test "record types need exactly the same field names" (typesEqual "{ x: number; }" "{ x: number; y: number; }" == false),
+  Test "record types need the same field types" (typesEqual "{ x: number; }" "{ x: string; }" == false),
+  Test "reordered record fields inside a function type"
+    (typesEqual "(p: { a: number; b: string; }) => number" "(q: { b: string; a: number; }) => number"),
+  Test "function types compare parameters in order"
+    (typesEqual "(a: number, b: string) => null" "(a: string, b: number) => null" == false),
+  Test "nested record field access" (globalTypeIs "let r = { inner: { v: true } }; let b = r.inner.v;" "b" "boolean"),
+
+  # --- statements and scopes
+  Test "T-LetAnn accepts a matching annotation" (typeChecks "let x: number = 5;"),
+  Test "T-LetAnn rejects a mismatching annotation" (typeErrorIs "let x: string = 5;" "AnnotationMismatch"),
+  Test "a declaration is visible only after its initializer" (typeErrorIs "let x = x;" "UnboundVariable"),
+  Test "inner initializer uses the outer binding: { let x = x + 1; }"
+    (typeChecks "let x = 1; { let x = x + 1; }"),
+  Test "{ let x = x + 1; } without an outer x is an unbound variable"
+    (typeErrorIs "{ let x = x + 1; }" "UnboundVariable"),
+  Test "shadowing in a nested block is allowed" (typeChecks "let x = 1; { let x = \"inner\"; }"),
+  Test "a block restores the outer environment" (typeErrorIs "{ let y = 1; } let z = y;" "UnboundVariable"),
+  Test "duplicate in a nested scope is still an error" (typeErrorIs "{ let a = 1; let a = 2; }" "DuplicateDeclaration"),
+  Test "same name in sibling blocks" (typeChecks "{ let a = 1; } { let a = true; }"),
+  Test "top level is one sequence, not a block" (globalTypeIs "let a = 1; let b = a;" "b" "number"),
+  Test "T-If both branches are checked" (typeErrorIs "if (true) {} else { let z = 1 + true; }" "InvalidOperands"),
+  Test "T-While non-boolean condition" (typeErrorIs "while (0) {}" "NonBooleanCondition"),
+  Test "T-While body is checked even if never run" (typeErrorIs "while (false) { 1 + \"x\"; }" "InvalidOperands"),
+  Test "T-ExprStmt checks the expression" (typeErrorIs "1 + true;" "InvalidOperands"),
+  Test "condition must be boolean, not null" (typeErrorIs "if (null) {}" "NonBooleanCondition")
+];
+
+# =====================================================================
+# 5. Evaluation
+# =====================================================================
+
+let evalTests = [
+  # --- literals and operators
+  Test "E-Number, E-String, E-Bool, E-Null"
+    (numIs "let a = 1.5;" "a" 1.5 && strIs "let a = \"s\";" "a" "s" && boolIs "let a = false;" "a" false && nullIs "let a = null;" "a"),
+  Test "numeric division is not integer division" (numIs "let a = 7 / 2;" "a" 3.5),
+  Test "ordinary floating-point rounding" (numIs "let a = 0.1 + 0.2;" "a" (0.1 +. 0.2)),
+  Test "precedence at run time" (numIs "let a = 2 + 3 * 4 - 10 / 5;" "a" 12.0),
+  Test "left-associative subtraction at run time" (numIs "let a = 10 - 4 - 3;" "a" 3.0),
+  Test "right-associative assignment: x = y = 5"
+    (globalsAre "let x = 0; let y = 0; x = y = 5;" "x = 5, y = 5"),
+  Test "assignment returns the assigned value" (numIs "let x = 0; let y = (x = 9) + 1;" "y" 10.0),
+  Test "unary minus and not" (numIs "let a = -(2 + 3);" "a" (0.0 -. 5.0) && boolIs "let a = !(1 < 2);" "a" false),
+  Test "comparisons" (globalsAre "let a = 1 < 2; let b = 2 <= 2; let c = 1 > 2; let d = 3 >= 4;" "a = true, b = true, c = false, d = false"),
+  Test "string concatenation with escapes"
+    (strIs "let s = \"line1\\n\" + \"tab\\there \\\"q\\\"\";" "s" "line1\ntab\there \"q\""),
+  Test "string equality compares decoded contents" (boolIs "let a = \"a\\tb\" === \"a\" + \"\\t\" + \"b\";" "a" true),
+  Test "number equality is numeric" (boolIs "let a = 0.5 + 0.5 === 1;" "a" true),
+  Test "boolean and null equality" (globalsAre "let a = true === true; let b = false !== true; let c = null === null;" "a = true, b = true, c = true"),
+  Test "!== negates equality" (boolIs "let a = \"x\" !== \"x\";" "a" false),
+  Test "&& and || return booleans" (globalsAre "let a = true && false; let b = false || true;" "a = false, b = true"),
+  Test "skipped operand has no runtime effects (division by zero not reached)"
+    (boolIs "let a = false && (1 / 0 === 1);" "a" false),
+
+  # --- runtime errors
+  Test "E-DivZero: division by zero is a runtime error" (divisionByZero "let a = 1 / 0;"),
+  Test "division by a computed zero" (divisionByZero "let z = 2 - 2; let a = 5 / z;"),
+  Test "division by zero inside a function" (divisionByZero "let f = (x: number): number => 1 / x; let a = f(0);"),
+  Test "an error stops execution (no Execution is returned)" (runsOk "let a = 1; let b = 1 / 0; let c = 2;" == false),
+  Test "an unselected branch does not raise" (runsOk "if (false) { let z = 1 / 0; }"),
+  Test "a type-incorrect program is never executed" (divisionByZero "let a = 1 / 0; let b = 1 + true;" == false),
+
+  # --- statements
+  Test "S-IfTrue" (numIs "let x = 0; if (1 < 2) { x = 1; } else { x = 2; }" "x" 1.0),
+  Test "S-IfFalse" (numIs "let x = 0; if (2 < 1) { x = 1; } else { x = 2; }" "x" 2.0),
+  Test "if without else and a false condition does nothing" (numIs "let x = 5; if (false) { x = 1; }" "x" 5.0),
+  Test "S-WhileFalse: zero iterations" (numIs "let x = 5; while (false) { x = 0; }" "x" 5.0),
+  Test "S-WhileTrue: several iterations" (numIs "let i = 0; let s = 0; while (i < 4) { i = i + 1; s = s + i; }" "s" 10.0),
+  Test "empty block and empty loop body" (runsOk "{} let i = 0; while ((i = i + 1) < 5) {}"),
+  Test "block exit discards locals" (notGlobal "{ let hidden = 1; }" "hidden"),
+  Test "block exit keeps the updated store" (numIs "let x = 1; { x = x + 10; }" "x" 11.0),
+  Test "inner initializer uses the outer x: { let x = x + 1; }"
+    (globalsAre "let x = 1; let y = 0; { let x = x + 1; y = x; }" "x = 1, y = 2"),
+  Test "shadowed variable in a block does not change the outer one"
+    (numIs "let x = 1; { let x = 100; x = x + 1; }" "x" 1.0),
+  Test "expression statement effects are kept" (numIs "let x = 0; (x = 3);" "x" 3.0),
+  Test "the empty program runs" (runsOk ""),
+
+  # --- functions and closures
+  Test "zero-argument function" (numIs "let f = (): number => 7; let a = f();" "a" 7.0),
+  Test "closure captures locations, not values" (numIs "let v = 1; let f = (): number => v; v = 50; let a = f();" "a" 50.0),
+  Test "each loop iteration gets fresh locations"
+    (globalsAre
+      "let first = (): number => 0; let second = (): number => 0; let i = 0;\nwhile (i < 2) {\n  let j = i * 10;\n  if (i === 0) { first = (): number => j; } else { second = (): number => j; }\n  i = i + 1;\n}\nlet a = first(); let b = second();"
+      "first = <function>, second = <function>, i = 2, a = 0, b = 10"),
+  Test "recursion through assignment (factorial via short-circuit)"
+    (numIs
+      "let result = 1;\nlet fact = (n: number): boolean => false;\nfact = (n: number): boolean => (n <= 1) || (((result = result * n) > 0) && fact(n - 1));\nfact(5);"
+      "result" 120.0),
+  Test "arguments are evaluated in the caller's environment"
+    (numIs "let x = 1; let f = (x: number): number => x * 2; let a = f(x + 1);" "a" 4.0),
+  Test "the body uses the closure's environment, not the caller's"
+    (numIs "let k = 1; let f = (): number => k; let g = (k: number): number => f(); let a = g(99);" "a" 1.0),
+  Test "functions returned from functions keep their own parameter"
+    (globalsAre "let mk = (n: number): () => number => (): number => n; let a = mk(1); let b = mk(2); let x = a(); let y = b();"
+      "mk = <function>, a = <function>, b = <function>, x = 1, y = 2"),
+
+  # --- records
+  Test "record fields are evaluated left to right"
+    (globalsAre "let x = 0; let r = { a: (x = x + 1), b: (x = x * 10) };" "x = 10, r = { a: 1, b: 10 }"),
+  Test "a variable holding a record may be reassigned"
+    (valueShows "let r = { v: 1 }; r = { v: 2 };" "r" "{ v: 2 }"),
+  Test "record values are immutable: an alias keeps the old record"
+    (valueShows "let r = { v: 1 }; let s = r; r = { v: 2 };" "s" "{ v: 1 }"),
+  Test "record field holding a function" (numIs "let r = { f: (x: number): number => x + 1 }; let a = r.f(1);" "a" 2.0),
+  Test "empty record value" (valueShows "let r = {};" "r" "{}"),
+
+  # --- public interface
+  Test "getGlobal returns None for an absent name" (notGlobal "let a = 1;" "b"),
+  Test "getGlobal reads the current store value" (numIs "let a = 1; a = a + 1; a = a * 10;" "a" 20.0),
+  Test "parse errors are reported as ParseFailure"
+    (match run "let = ;" { Err (ParseFailure _) => true; _ => false; }),
+  Test "type errors are reported as TypeFailure"
+    (match run "let a = 1 + true;" { Err (TypeFailure _) => true; _ => false; }),
+  Test "runtime errors are reported as RuntimeFailure"
+    (match run "let a = 1 / 0;" { Err (RuntimeFailure _) => true; _ => false; })
+];
+
+# =====================================================================
+# 6. Defensive evaluation of unchecked ASTs (InvalidRuntimeOperation)
+# =====================================================================
+
+let defensiveTests = [
+  Test "unbound variable" (execInvalid [SExpr (EVar "nope")]),
+  Test "assignment to an unbound variable" (execInvalid [SExpr (EAssign "nope" (num 1.0))]),
+  Test "calling a non-function" (execInvalid [SExpr (ECall (num 1.0) [])]),
+  Test "wrong arity"
+    (execInvalid [SLet "f" None (EFun [] TyNumber (num 1.0)), SExpr (ECall (EVar "f") [num 2.0])]),
+  Test "field of a non-record" (execInvalid [SExpr (EField (num 1.0) "x")]),
+  Test "absent field" (execInvalid [SExpr (EField (ERecord []) "x")]),
+  Test "invalid operand shape for +" (execInvalid [SExpr (EBinary OpAdd (num 1.0) (EBool true))]),
+  Test "invalid operand shape for -" (execInvalid [SExpr (EUnary OpNeg (EStr "s"))]),
+  Test "non-boolean && operand" (execInvalid [SExpr (EBinary OpAnd (num 1.0) (EBool true))]),
+  Test "equality on records" (execInvalid [SExpr (EBinary OpEq (ERecord []) (ERecord []))]),
+  Test "non-boolean if condition" (execInvalid [SIf (num 1.0) (SBlock []) (SBlock [])]),
+  Test "non-boolean while condition" (execInvalid [SWhile ENull (SBlock [])]),
+  Test "duplicate local declaration"
+    (execInvalid [SLet "a" None (num 1.0), SLet "a" None (num 2.0)]),
+  Test "duplicate is checked before the initializer runs (no division by zero reported)"
+    (execInvalid [SLet "a" None (num 1.0), SLet "a" None (EBinary OpDiv (num 1.0) (num 0.0))]),
+  Test "callee shape is checked before arguments run"
+    (execInvalid [SExpr (ECall (num 1.0) [EBinary OpDiv (num 1.0) (num 0.0)])]),
+  Test "arity is checked before arguments run"
+    (execInvalid [SLet "f" None (EFun [] TyNumber (num 1.0)),
+                  SExpr (ECall (EVar "f") [EBinary OpDiv (num 1.0) (num 0.0)])]),
+  Test "assignment target is checked before the right side runs"
+    (execInvalid [SExpr (EAssign "nope" (EBinary OpDiv (num 1.0) (num 0.0)))])
+];
+
+# =====================================================================
+# TWIST: /* */ block comments
+# =====================================================================
+
+let twistTests = [
+  Test "block comment between grammar elements" (parsesTo "let /* a */ x /* b */ = /* c */ 1 /* d */;" "(let x 1)"),
+  Test "block comment spanning lines" (parsesTo "/* line 1\nline 2 */ let x = 1;" "(let x 1)"),
+  Test "block comment at the very end" (parsesTo "let x = 1; /* end */" "(let x 1)"),
+  Test "block comment touching operators" (exprParsesTo "a/*x*/+/*y*/b" "(+ a b)"),
+  Test "division is still division" (numIs "let a = 8 / 2;" "a" 4.0),
+  Test "unterminated block comment is rejected at its start" (parseFailsAt "let x = 1; /* oops" 1 12),
+  Test "block comments do not nest" (parseFails "/* a /* b */ c */ let x = 1;"),
+  Test "/* inside a string is not a comment" (strIs "let s = \"/* no */\";" "s" "/* no */")
+];
+
+# =====================================================================
+# Running
+# =====================================================================
+
+let allTests =
+  listAppend specExamples
+    (listAppend specRejected
+      (listAppend parserTests
+        (listAppend checkerTests
+          (listAppend evalTests (listAppend defensiveTests twistTests)))));
+
+# report :: [Test] -> Int -> Int -> Unit
+#   Prints one line per test and a summary; exits with status 1 if any failed.
+let report tests passed failed =
+  match tests {
+    [] => {
+      output
+        (str_join ["\n", int_to_string passed, " passed, ", int_to_string failed, " failed, ",
+                   int_to_string (passed + failed), " total\n"]);
+      if failed > 0 then exit 1 else []
+    };
+    Test label ok :: rest =>
+      if ok then {
+        output (str_join ["PASS  ", label, "\n"]);
+        report rest (passed + 1) failed
+      } else {
+        output (str_join ["FAIL  ", label, "\n"]);
+        report rest passed (failed + 1)
+      };
+  };
+
+report allTests 0 0;

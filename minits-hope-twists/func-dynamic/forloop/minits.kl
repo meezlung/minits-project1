@@ -1,0 +1,76 @@
+# minits.kl -- public interface: run and getGlobal.
+include "eval.kl";
+
+# Error distinguishes the three stages that can fail.
+type Error
+  = ParseFailure ParseError
+  | TypeFailure TypeError
+  | RuntimeFailure RuntimeError;
+
+# run :: String -> Result Execution Error
+#   1. parse the text directly (end of input required after trailing
+#      whitespace and comments), 2. type-check the whole program,
+#   3. execute only if both succeeded.
+let run src =
+  match parse src {
+    Err e => Err (ParseFailure e);
+    Ok prog =>
+      match checkProgram prog {
+        Err e => Err (TypeFailure e);
+        Ok _ =>
+          match execProgram prog {
+            Err e => Err (RuntimeFailure e);
+            Ok execution => Ok execution;
+          };
+      };
+  };
+
+# globalScope :: Env -> [Pair String Int]   (the outermost scope)
+let globalScope env =
+  let last scopes =
+    match scopes {
+      [] => [];
+      scope :: [] => scope;
+      _ :: rest => last rest;
+    }
+  in
+    match env {
+      Env scopes => last scopes;
+    };
+
+# getGlobal :: Execution -> String -> Option Value
+#   Look the name up among the top-level bindings, then read its current
+#   value from the store. None when the name is not a global.
+let getGlobal execution name =
+  match execution {
+    Execution env store =>
+      match scopeLocation name (globalScope env) {
+        None => None;
+        Some loc => storeGet store loc;
+      };
+  };
+
+# showError :: Error -> String
+let showError err =
+  match err {
+    ParseFailure e => str_concat "Parse error at " (showParseError e);
+    TypeFailure e => str_concat "Type error: " (showTypeError e);
+    RuntimeFailure e => str_concat "Runtime error: " (showRuntimeError e);
+  };
+
+# showGlobals :: Execution -> String   e.g. "n = 1, result = 120" (declaration order)
+let showGlobals execution =
+  match execution {
+    Execution env store =>
+      joinWith ", "
+        (listMap
+          (fn b =>
+            match b {
+              Pair name loc =>
+                match storeGet store loc {
+                  None => str_concat name " = ?";
+                  Some v => str_join [name, " = ", showValue v];
+                };
+            })
+          (listReverse (globalScope env)));
+  };

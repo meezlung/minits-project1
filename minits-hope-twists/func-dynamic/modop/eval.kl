@@ -1,0 +1,541 @@
+# eval.kl -- big-step evaluation with environments and a store
+#            (Sections 4 and 5 of the spec).
+include "checker.kl";
+
+# =====================================================================
+# Values, environments, stores
+# =====================================================================
+
+# v ::= n | b | q | null | {f1: v1, ...} | Closure([x1..xn], e, ρc)
+#   A closure keeps the raw scope stack of its defining environment.
+type Value
+  = VNum Float
+  | VBool Bool
+  | VStr String
+  | VNull
+  | VRecord [Pair String Value]              # field name, value (source order)
+  | VClosure [String] Expr [[Pair String Int]];
+
+# ρ : Identifier -> Location. A stack of scopes, innermost first.
+type Env
+  = Env [[Pair String Int]];
+
+# σ : Location -> Value.  Store nextFreeLocation cells
+#   Locations are integers handed out by a counter that only goes up, so a
+#   location still in the store is never reused.
+type Store
+  = Store Int [Pair Int Value];
+
+# The final top-level environment and store of a successful run.
+type Execution
+  = Execution Env Store;
+
+type RuntimeError
+  = DivisionByZero
+  | InvalidRuntimeOperation String;   # defensive checks (never for well-typed programs)
+
+# ---------------------------------------------------------------------
+# Environment operations (same shape as the type environment)
+
+let emptyEnv =
+  Env [[]];
+
+let pushEnv env =
+  match env {
+    Env scopes => Env ([] :: scopes);
+  };
+
+let bindEnv env name loc =
+  match env {
+    Env [] => Env [[Pair name loc]];
+    Env (scope :: outer) => Env ((Pair name loc :: scope) :: outer);
+  };
+
+let scopeLocation name scope =
+  match scope {
+    [] => None;
+    Pair n l :: rest => if n == name then Some l else scopeLocation name rest;
+  };
+
+# lookupLocation :: Env -> String -> Option Int      ρ(x), innermost first
+let lookupLocation env name =
+  let go scopes =
+    match scopes {
+      [] => None;
+      scope :: outer =>
+        match scopeLocation name scope {
+          Some l => Some l;
+          None => go outer;
+        };
+    }
+  in
+    match env {
+      Env scopes => go scopes;
+    };
+
+# declaredInScope :: Env -> String -> Bool          x ∈ local(ρ)
+let declaredInScope env name =
+  match env {
+    Env [] => false;
+    Env (scope :: _) =>
+      match scopeLocation name scope {
+        Some _ => true;
+        None => false;
+      };
+  };
+
+# ---------------------------------------------------------------------
+# Store operations
+
+let emptyStore =
+  Store 0 [];
+
+# allocate :: Store -> Value -> Pair Int Store    (fresh ℓ ∉ dom(σ))
+let allocate store v =
+  match store {
+    Store next cells => Pair next (Store (next + 1) (Pair next v :: cells));
+  };
+
+# storeGet :: Store -> Int -> Option Value         σ(ℓ)
+let storeGet store loc =
+  let go cells =
+    match cells {
+      [] => None;
+      Pair l v :: rest => if l == loc then Some v else go rest;
+    }
+  in
+    match store {
+      Store _ cells => go cells;
+    };
+
+# storeSet :: Store -> Int -> Value -> Store       σ[ℓ ↦ v]  (replace the entry)
+let storeSet store loc v =
+  let go cells =
+    match cells {
+      [] => [];
+      Pair l old :: rest => if l == loc then Pair l v :: rest else Pair l old :: go rest;
+    }
+  in
+    match store {
+      Store next cells => Store next (go cells);
+    };
+
+# storeSize :: Store -> Int   (number of locations in use; for tests)
+let storeSize store =
+  match store {
+    Store _ cells => listLength cells;
+  };
+
+# ---------------------------------------------------------------------
+# Display
+
+let showValue v =
+  match v {
+    VNum n => floatToText n;
+    VBool b => if b then "true" else "false";
+    VStr s => str_join ["\"", escapeText s, "\""];
+    VNull => "null";
+    VRecord fields =>
+      match fields {
+        [] => "{}";
+        _ =>
+          str_join [
+            "{ ",
+            joinWith ", " (listMap (fn f => match f { Pair n fv => str_join [n, ": ", showValue fv]; }) fields),
+            " }"
+          ];
+      };
+    VClosure _ _ _ => "<function>";
+  };
+
+let showRuntimeError e =
+  match e {
+    DivisionByZero => "division by zero";
+    InvalidRuntimeOperation msg => str_concat "invalid runtime operation: " msg;
+  };
+
+# =====================================================================
+# Primitive operations δ1 and δ2 (they return a value, never a store)
+# =====================================================================
+
+let invalidOp what =
+  Err (InvalidRuntimeOperation what);
+
+# delta1 :: UnOp -> Value -> Result Value RuntimeError
+let delta1 op v =
+  match op {
+    OpNeg => (match v { VNum n => Ok (VNum (0.0 -. n)); _ => invalidOp "operand of - must be a number"; });
+    OpNot => (match v { VBool b => Ok (VBool (if b then false else true)); _ => invalidOp "operand of ! must be a boolean"; });
+  };
+
+# numbers :: String -> Value -> Value -> (Float -> Float -> Result Value RuntimeError) -> Result Value RuntimeError
+let numbers what a b k =
+  match a {
+    VNum x => (match b { VNum y => k x y; _ => invalidOp what; });
+    _ => invalidOp what;
+  };
+
+# primitiveEquals :: Value -> Value -> Option Bool   (None: not the same primitive type)
+let primitiveEquals a b =
+  match a {
+    VNum x => (match b { VNum y => Some (x == y); _ => None; });
+    VBool x => (match b { VBool y => Some (x == y); _ => None; });
+    VStr x => (match b { VStr y => Some (x == y); _ => None; });
+    VNull => (match b { VNull => Some true; _ => None; });
+    _ => None;
+  };
+
+# delta2 :: BinOp -> Value -> Value -> Result Value RuntimeError
+let delta2 op a b =
+  let what = str_join ["invalid operands for ", binOpText op] in
+  match op {
+    OpAdd =>
+      match a {
+        VStr x => (match b { VStr y => Ok (VStr (str_concat x y)); _ => invalidOp what; });
+        _ => numbers what a b (fn x y => Ok (VNum (x +. y)));
+      };
+    OpSub => numbers what a b (fn x y => Ok (VNum (x -. y)));
+    OpMul => numbers what a b (fn x y => Ok (VNum (x *. y)));
+    OpDiv => numbers what a b (fn x y => if y == 0.0 then Err DivisionByZero else Ok (VNum (x /. y)));
+    # TWIST: x % y = x - y * trunc(x / y)   (float_to_int truncates toward zero)
+    OpMod =>
+      numbers what a b (fn x y =>
+        if y == 0.0 then Err DivisionByZero
+        else Ok (VNum (x -. (y *. int_to_float (float_to_int (x /. y))))));
+    OpLt => numbers what a b (fn x y => Ok (VBool (x <. y)));
+    OpLe => numbers what a b (fn x y => Ok (VBool (x <=. y)));
+    OpGt => numbers what a b (fn x y => Ok (VBool (x >. y)));
+    OpGe => numbers what a b (fn x y => Ok (VBool (x >=. y)));
+    OpEq =>
+      (match primitiveEquals a b {
+         None => invalidOp what;
+         Some same => Ok (VBool same);
+       });
+    OpNeq =>
+      (match primitiveEquals a b {
+         None => invalidOp what;
+         Some same => Ok (VBool (if same then false else true));
+       });
+    OpAnd => invalidOp "&& is not a strict operator";
+    OpOr => invalidOp "|| is not a strict operator";
+  };
+
+# =====================================================================
+# Expressions:  evalExpr : Expr -> Env -> Store -> Result (Pair Value Store) RuntimeError
+#   Every rule threads the store left to right through its premises; the
+#   first error stops evaluation (Error-Propagate).
+# =====================================================================
+
+# bindParams :: [String] -> [Value] -> Env -> Store -> Pair Env Store
+#   Fresh, pairwise-distinct locations for parameters, allocated in order.
+let bindParams names vals env store =
+  match names {
+    [] => Pair env store;
+    x :: xs =>
+      match vals {
+        [] => Pair env store;
+        v :: vs =>
+          match allocate store v {
+            Pair loc store1 => bindParams xs vs (bindEnv env x loc) store1;
+          };
+      };
+  };
+
+# zipNames :: [String] -> [Value] -> [Pair String Value]
+let zipNames names vals =
+  match names {
+    [] => [];
+    n :: ns =>
+      match vals {
+        [] => [];
+        v :: vs => Pair n v :: zipNames ns vs;
+      };
+  };
+
+# recordField :: String -> [Pair String Value] -> Option Value
+let recordField name fields =
+  match fields {
+    [] => None;
+    Pair n v :: rest => if n == name then Some v else recordField name rest;
+  };
+
+let evalExpr e env store =
+  # E-ListEmpty / E-ListCons: evaluate expressions left to right
+  let evalList es st =
+    match es {
+      [] => Ok (Pair [] st);
+      x :: rest =>
+        match evalExpr x env st {
+          Err err => Err err;
+          Ok (Pair v st1) =>
+            match evalList rest st1 {
+              Err err => Err err;
+              Ok (Pair vs st2) => Ok (Pair (v :: vs) st2);
+            };
+        };
+    }
+  in
+  match e {
+    # E-Number, E-String, E-Bool, E-Null
+    ENum n => Ok (Pair (VNum n) store);
+    EStr s => Ok (Pair (VStr s) store);
+    EBool b => Ok (Pair (VBool b) store);
+    ENull => Ok (Pair VNull store);
+
+    # E-Var: ρ(x) = ℓ, σ(ℓ) = v
+    EVar x =>
+      match lookupLocation env x {
+        None => invalidOp (str_concat "unbound variable " x);
+        Some loc =>
+          match storeGet store loc {
+            None => invalidOp (str_concat "dangling location for " x);
+            Some v => Ok (Pair v store);
+          };
+      };
+
+    # E-Assign: the target is looked up before the right side is evaluated
+    EAssign x rhs =>
+      match lookupLocation env x {
+        None => invalidOp (str_concat "assignment to unbound variable " x);
+        Some loc =>
+          match evalExpr rhs env store {
+            Err err => Err err;
+            Ok (Pair v store1) => Ok (Pair v (storeSet store1 loc v));
+          };
+      };
+
+    # E-Unary
+    EUnary op inner =>
+      match evalExpr inner env store {
+        Err err => Err err;
+        Ok (Pair v store1) =>
+          match delta1 op v {
+            Err err => Err err;
+            Ok result => Ok (Pair result store1);
+          };
+      };
+
+    EBinary op l r =>
+      match op {
+        # E-AndFalse / E-AndTrue: the right operand runs only if needed
+        OpAnd =>
+          match evalExpr l env store {
+            Err err => Err err;
+            Ok (Pair lv store1) =>
+              match lv {
+                VBool false => Ok (Pair (VBool false) store1);
+                VBool true =>
+                  match evalExpr r env store1 {
+                    Err err => Err err;
+                    Ok (Pair rv store2) =>
+                      match rv {
+                        VBool b => Ok (Pair (VBool b) store2);
+                        _ => invalidOp "right operand of && must be a boolean";
+                      };
+                  };
+                _ => invalidOp "left operand of && must be a boolean";
+              };
+          };
+        # E-OrTrue / E-OrFalse
+        OpOr =>
+          match evalExpr l env store {
+            Err err => Err err;
+            Ok (Pair lv store1) =>
+              match lv {
+                VBool true => Ok (Pair (VBool true) store1);
+                VBool false =>
+                  match evalExpr r env store1 {
+                    Err err => Err err;
+                    Ok (Pair rv store2) =>
+                      match rv {
+                        VBool b => Ok (Pair (VBool b) store2);
+                        _ => invalidOp "right operand of || must be a boolean";
+                      };
+                  };
+                _ => invalidOp "left operand of || must be a boolean";
+              };
+          };
+        # E-Binary (and E-DivZero via delta2)
+        _ =>
+          match evalExpr l env store {
+            Err err => Err err;
+            Ok (Pair lv store1) =>
+              match evalExpr r env store1 {
+                Err err => Err err;
+                Ok (Pair rv store2) =>
+                  match delta2 op lv rv {
+                    Err err => Err err;
+                    Ok result => Ok (Pair result store2);
+                  };
+              };
+          };
+      };
+
+    # E-Fun: capture the current environment (not the store)
+    EFun params _ body =>
+      match env {
+        Env scopes =>
+          Ok (Pair (VClosure (listMap (fn p => match p { Pair n _ => n; }) params) body scopes) store);
+      };
+
+    # E-App: callee first; check closure shape and arity before the
+    # arguments; then arguments in the caller's environment; then the body
+    # in push(ρc)[x1 ↦ ℓ1, ...] with the current store.
+    ECall callee args =>
+      match evalExpr callee env store {
+        Err err => Err err;
+        Ok (Pair fv store1) =>
+          match fv {
+            VClosure names body closureScopes =>
+              if listLength names != listLength args then
+                invalidOp "wrong number of arguments"
+              else
+                (match evalList args store1 {
+                   Err err => Err err;
+                   Ok (Pair vals store2) =>
+                     match bindParams names vals (pushEnv (Env closureScopes)) store2 {
+                       Pair bodyEnv store3 => evalExpr body bodyEnv store3;
+                     };
+                 });
+            _ => invalidOp "call of a non-function value";
+          };
+      };
+
+    # E-Field
+    EField target name =>
+      match evalExpr target env store {
+        Err err => Err err;
+        Ok (Pair tv store1) =>
+          match tv {
+            VRecord fields =>
+              match recordField name fields {
+                None => invalidOp (str_concat "missing field " name);
+                Some v => Ok (Pair v store1);
+              };
+            _ => invalidOp "field access on a non-record value";
+          };
+      };
+
+    # E-Record: field expressions left to right
+    ERecord fields =>
+      match firstDuplicate (listMap (fn f => match f { Pair n _ => n; }) fields) {
+        Some dup => invalidOp (str_concat "duplicate field " dup);
+        None =>
+          match evalList (listMap (fn f => match f { Pair _ fe => fe; }) fields) store {
+            Err err => Err err;
+            Ok (Pair vals store1) =>
+              Ok (Pair (VRecord (zipNames (listMap (fn f => match f { Pair n _ => n; }) fields) vals)) store1);
+          };
+      };
+  };
+
+# =====================================================================
+# Statements:  execStmt : Stmt -> Env -> Store -> Result (Pair Env Store) RuntimeError
+# =====================================================================
+
+# expectBool :: Value -> Option Bool
+let expectBool v =
+  match v {
+    VBool b => Some b;
+    _ => None;
+  };
+
+let execStmt s env store =
+  # S-SeqEmpty / S-SeqCons
+  let seq stmts curEnv st =
+    match stmts {
+      [] => Ok (Pair curEnv st);
+      first :: rest =>
+        match execStmt first curEnv st {
+          Err err => Err err;
+          Ok (Pair env1 st1) => seq rest env1 st1;
+        };
+    }
+  in
+  match s {
+    # S-Let / S-LetAnn: duplicate check, then the initializer, then a fresh
+    # location. The new name is not visible inside its own initializer.
+    SLet x _ init =>
+      if declaredInScope env x then
+        invalidOp (str_join ["'", x, "' is already declared in this scope"])
+      else
+        (match evalExpr init env store {
+           Err err => Err err;
+           Ok (Pair v store1) =>
+             match allocate store1 v {
+               Pair loc store2 => Ok (Pair (bindEnv env x loc) store2);
+             };
+         });
+
+    # S-ExprStmt
+    SExpr e =>
+      match evalExpr e env store {
+        Err err => Err err;
+        Ok (Pair _ store1) => Ok (Pair env store1);
+      };
+
+    # S-Block: run in push(ρ); drop local bindings but keep the store.
+    SBlock body =>
+      match seq body (pushEnv env) store {
+        Err err => Err err;
+        Ok (Pair _ store1) => Ok (Pair env store1);
+      };
+
+    # S-IfTrue / S-IfFalse
+    SIf cond thenBlock elseBlock =>
+      match evalExpr cond env store {
+        Err err => Err err;
+        Ok (Pair cv store1) =>
+          match expectBool cv {
+            None => invalidOp "if condition must be a boolean";
+            Some b =>
+              match execStmt (if b then thenBlock else elseBlock) env store1 {
+                Err err => Err err;
+                Ok (Pair _ store2) => Ok (Pair env store2);
+              };
+          };
+      };
+
+    # S-WhileFalse / S-WhileTrue. The condition may change the store even
+    # when it is false; each iteration runs the body block afresh.
+    SWhile cond body =>
+      let loop st =
+        match evalExpr cond env st {
+          Err err => Err err;
+          Ok (Pair cv st1) =>
+            match expectBool cv {
+              None => invalidOp "while condition must be a boolean";
+              Some b =>
+                if b then
+                  (match execStmt body env st1 {
+                     Err err => Err err;
+                     Ok (Pair _ st2) => loop st2;
+                   })
+                else
+                  Ok (Pair env st1);
+            };
+        }
+      in
+        loop store;
+  };
+
+# execStmts :: [Stmt] -> Env -> Store -> Result (Pair Env Store) RuntimeError
+let execStmts stmts env store =
+  match stmts {
+    [] => Ok (Pair env store);
+    s :: rest =>
+      match execStmt s env store {
+        Err err => Err err;
+        Ok (Pair env1 store1) => execStmts rest env1 store1;
+      };
+  };
+
+# execProgram :: Program -> Result Execution RuntimeError     (S-Program)
+let execProgram prog =
+  match prog {
+    Program stmts =>
+      match execStmts stmts emptyEnv emptyStore {
+        Err err => Err err;
+        Ok (Pair env store) => Ok (Execution env store);
+      };
+  };
