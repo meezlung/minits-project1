@@ -197,10 +197,10 @@ let delta2 op a b =
     OpSub => numbers what a b (fn x y => Ok (VNum (x -. y)));
     OpMul => numbers what a b (fn x y => Ok (VNum (x *. y)));
     OpDiv => numbers what a b (fn x y => if y == 0.0 then Err DivisionByZero else Ok (VNum (x /. y)));
-    OpLt => numbers what a b (fn x y => Ok (VBool (x < y)));
-    OpLe => numbers what a b (fn x y => Ok (VBool (x <= y)));
-    OpGt => numbers what a b (fn x y => Ok (VBool (x > y)));
-    OpGe => numbers what a b (fn x y => Ok (VBool (x >= y)));
+    OpLt => numbers what a b (fn x y => Ok (VBool (x <. y)));
+    OpLe => numbers what a b (fn x y => Ok (VBool (x <=. y)));
+    OpGt => numbers what a b (fn x y => Ok (VBool (x >. y)));
+    OpGe => numbers what a b (fn x y => Ok (VBool (x >=. y)));
     OpEq =>
       (match primitiveEquals a b {
          None => invalidOp what;

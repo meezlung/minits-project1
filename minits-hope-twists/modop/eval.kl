@@ -202,10 +202,10 @@ let delta2 op a b =
       numbers what a b (fn x y =>
         if y == 0.0 then Err DivisionByZero
         else Ok (VNum (x -. (y *. int_to_float (float_to_int (x /. y))))));
-    OpLt => numbers what a b (fn x y => Ok (VBool (x < y)));
-    OpLe => numbers what a b (fn x y => Ok (VBool (x <= y)));
-    OpGt => numbers what a b (fn x y => Ok (VBool (x > y)));
-    OpGe => numbers what a b (fn x y => Ok (VBool (x >= y)));
+    OpLt => numbers what a b (fn x y => Ok (VBool (x <. y)));
+    OpLe => numbers what a b (fn x y => Ok (VBool (x <=. y)));
+    OpGt => numbers what a b (fn x y => Ok (VBool (x >. y)));
+    OpGe => numbers what a b (fn x y => Ok (VBool (x >=. y)));
     OpEq =>
       (match primitiveEquals a b {
          None => invalidOp what;
