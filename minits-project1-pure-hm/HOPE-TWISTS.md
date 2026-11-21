@@ -30,11 +30,11 @@ Pipeline: `run src` (`minits.kl:14`) = **parse** → **checkProgram** → **exec
 |---|---|---|
 | AST | `syntax.kl` | `type BinOp` :31, `type Expr` :37, `type Stmt` :54, printers `binOpText` :75, `showExpr` :135, `showStmt` :169 |
 | Parser combinators | `parser.kl` | `bindP` :105, `orP` :131 (backtracks), `choiceP` :143, `manyP` :164, `optionP` :172, `sepByP` :180, `chainl1` :185, `notFollowedByP` :193 |
-| Tokens | `parser.kl` | `wsP` :282 (whitespace + comments), `symbolP` :296, `operatorP` :302 (longest-match rules), `reservedWords` :315, `keywordP` :328, `identifierP` :335 |
-| Literals | `parser.kl` | `numberRawP` :363, `escapeChar` :385, `stringBody` :395 |
-| Types (syntax) | `parser.kl` | `primitiveTypeP` :439, `functionTypeP` :453, `recordTypeP` :466 |
-| Expressions, by precedence (loosest at the bottom) | `parser.kl` | `primaryP` :533 → `postfixP` :570 → `unaryP` :576 → `multiplicationP` :590 → `additionP` :594 → `comparisonP` :598 → `equalityP` :603 → `logicalAndP` :607 → `logicalOrP` :611 → `assignmentP` :617 |
-| Statements | `parser.kl` | `blockP` :651, `letStmtP` :657, `ifStmtP` :666, `whileStmtP` :681, `exprStmtP` :689, **`statementP` :694** (list of alternatives) |
+| Tokens | `parser.kl` | `wsP` :285 (whitespace + comments), `symbolP` :299, `operatorP` :305 (longest-match rules), `reservedWords` :318, `keywordP` :334, `identifierP` :341 |
+| Literals | `parser.kl` | `numberRawP` :369, `escapeChar` :392, `stringBody` :402 |
+| Types (syntax) | `parser.kl` | `primitiveTypeP` :446, `functionTypeP` :464, `recordTypeP` :484 |
+| Expressions, by precedence (loosest at the bottom) | `parser.kl` | `primaryP` :573 → `postfixP` :617 → `unaryP` :625 → `multiplicationP` :639 → `additionP` :643 → `comparisonP` :647 → `equalityP` :652 → `logicalAndP` :656 → `logicalOrP` :660 → `assignmentP` :666 |
+| Statements | `parser.kl` | `blockP` :704, `letStmtP` :712, `ifStmtP` :724, `whileStmtP` :740, `exprStmtP` :751, **`statementP` :760** (list of alternatives) |
 | Types (semantic) | `checker.kl` | `type Type` :9, **`type TypeError` :18**, `showTypeError` :179, `typeEq` :106, `resolveType` :211 |
 | Operator typing | `checker.kl` | **`binaryResultType` :290** (one line per operator) |
 | Expression typing | `checker.kl` | `checkExpr` :328 (`EAssign` :376, `EUnary` :387, `EBinary` :398, `EFun` :409, `ECall` :436, `EField` :454, `ERecord` :469) |
@@ -59,6 +59,12 @@ Pipeline: `run src` (`minits.kl:14`) = **parse** → **checkProgram** → **exec
 - **A recursive top-level function needs `letrec`.** Plain top-level `let` cannot refer to itself ("unbound name"). A local helper with parameters (`let go x = ... in`) may recurse with plain `let`.
 - **The unit value is `unit`.**
 - **Effects are IO values.** Use `outputLnIO`, `bindIO`, `pureIO`, and the program is `let main = ...;` (`tests.kl:677`). The interpreter itself (`parse`, `run`, ...) is pure and never prints.
+- **Parsers are written with `do (bindP) { ... }`**, like the lab's `do (bindIO)`. Inside the braces:
+  - `p;` runs parser `p` and ignores its result (for example `symbolP ";";`).
+  - `let! x = p;` runs `p` and names its result `x`.
+  - The last line is the result parser, usually `pureP (...)`.
+
+  If any step fails, the whole block fails. `do` exists only in pure dialects; func-hm and func-dynamic write the same parsers with backticks (``p `bindP` (fn x => ...)``).
 - Code in the reference folders (`../minits-hope-twists/pure-hm/*`) is written in this dialect and can be pasted as-is.
 
 Common to all three dialects (KLang 12.0.0):
@@ -79,10 +85,10 @@ Ask: **is it new syntax only (sugar), a new operator, a new expression, or a new
 |---|---|---|---|---|---|
 | Sugar (else-if, for, do-while, `+=`) | – | ✔ build existing AST | – | – | ✔ |
 | New binary operator (`%`) | `BinOp` + `binOpText` | one `binOpP` at the right precedence level | one line in `binaryResultType` | one line in `delta2` | ✔ |
-| New unary operator | `UnOp` + `unOpText` | `unaryP` :576 | `EUnary` case :387 | `delta1` :165 | ✔ |
+| New unary operator | `UnOp` + `unOpText` | `unaryP` :625 | `EUnary` case :387 | `delta1` :165 | ✔ |
 | New expression (`?:`) | `Expr` + `showExpr` | new level, or new `primaryP` alternative | new `checkExpr` case (+ maybe a new `TypeError`) | new `evalExpr` case | ✔ |
-| New statement (`const`, `break`) | `Stmt` + `showStmt` | new `xxxStmtP` + add it to `statementP` :694 | new `checkStmt` case | new `execStmt` case | ✔ |
-| New keyword | – | add to `reservedWords` :315, parse with `keywordP` | | | test that `let kw = 1;` fails and `let kwx = 1;` passes |
+| New statement (`const`, `break`) | `Stmt` + `showStmt` | new `xxxStmtP` + add it to `statementP` :760 | new `checkStmt` case | new `execStmt` case | ✔ |
+| New keyword | – | add to `reservedWords` :318, parse with `keywordP` | | | test that `let kw = 1;` fails and `let kwx = 1;` passes |
 | New `TypeError` | | | add a constructor :18–33 + a line in `showTypeError` :179 | | **add it to `typeErrorKind` :112**, or tests.kl will not compile (non-exhaustive match) |
 | New `RuntimeError` | | | | constructor :33 + `showRuntimeError` :151 | |
 
@@ -101,7 +107,7 @@ Each recipe lists **file:line → what to do**, then the code, then tests. The c
      = OpAdd | OpSub | OpMul | OpDiv | OpMod
    ```
 2. `syntax.kl:80`, in `binOpText`, after `OpDiv => "/";`, add `    OpMod => "%";`
-3. `parser.kl:591`, in `multiplicationP`, replace the `orP` with a `choiceP`:
+3. `parser.kl:640`, in `multiplicationP`, replace the `orP` with a `choiceP`:
    ```
      chainl1 (unaryP expr) (choiceP [binOpP "*" OpMul, binOpP "/" OpDiv, binOpP "%" OpMod]);
    ```
@@ -119,21 +125,22 @@ Each recipe lists **file:line → what to do**, then the code, then tests. The c
 Tests: `17 % 5` → 2, `-7 % 3` → -1, `5.5 % 2` → 1.5, `1 % 0` → DivisionByZero, `"x" % 2` → InvalidOperands, and `a % b % c` parses as `(% (% a b) c)`.
 
 **Variations:**
-- A different operator at the *addition* level: edit `additionP` :594 instead.
+- A different operator at the *addition* level: edit `additionP` :643 instead.
 - An operator at a *new* precedence level, for example `**`, tighter than `*`: write `powerP expr` between `unaryP` and `multiplicationP` and make `multiplicationP` call it.
   - **Right-associative**: `` letrec powerP expr = unaryP expr `bindP` (fn l => orP (operatorP "**" `bindP` (fn _ => mapP (fn r => EBinary OpPow l r) (powerP expr))) (pureP l)); ``
-  - Also add `"*"` to the `forbidden` rules in `operatorP` :302 (`else if text == "*" then ["*"]`), so that `*` never matches the start of `**`.
+  - Also add `"*"` to the `forbidden` rules in `operatorP` :305 (`else if text == "*" then ["*"]`), so that `*` never matches the start of `**`.
   - KLang has no `pow` built-in. Compute it by repeated multiplication for whole-number exponents.
 
 ### B. `else if` — `elseif/` (sugar, parser only)
 
-`parser.kl:666–678`, `ifStmtP`. The function must call itself, so in HM dialects change `let ifStmtP` to `letrec ifStmtP`. Then replace the last line, `` (optionP (keywordP "else" `thenP` (blockP stmt)))))))); ``, with:
+`parser.kl:724–737`, `ifStmtP`. The function must call itself, so change `let ifStmtP` to `letrec ifStmtP`. Then replace the line `` let! elseOpt = optionP (keywordP "else" `thenP` (blockP stmt)); `` (:731) with:
 ```
-              (optionP
-                (keywordP "else" `thenP`
-                  (orP
-                    (blockP stmt)
-                    (mapP (fn nested => SBlock [nested]) (ifStmtP stmt))))))))));
+    let! elseOpt =
+      optionP
+        (keywordP "else" `thenP`
+          (orP
+            (blockP stmt)
+            (mapP (fn nested => SBlock [nested]) (ifStmtP stmt))));
 ```
 `else if (b) {..}` becomes `else { if (b) {..} }`.
 
@@ -147,18 +154,23 @@ Precedence: looser than `||`, tighter than `=`. Right-associative.
    ```
        ECond c a b => str_join ["(? ", showExpr c, " ", showExpr a, " ", showExpr b, ")"];
    ```
-2. `parser.kl:614`, just above `assignmentP`, add:
+2. `parser.kl:663`, just above `assignmentP`, add:
    ```
    letrec conditionalP expr =
-     logicalOrP expr `bindP` (fn c =>
+     do (bindP) {
+       let! c = logicalOrP expr;
        orP
-         (symbolP "?" `thenP`
-           (expr `bindP` (fn a =>
-             symbolP ":" `thenP`
-               (mapP (fn b => ECond c a b) (conditionalP expr)))))
-         (pureP c));
+         (do (bindP) {
+            symbolP "?";
+            let! a = expr;
+            symbolP ":";
+            let! b = conditionalP expr;
+            pureP (ECond c a b)
+          })
+         (pureP c)
+     };
    ```
-   Then at `parser.kl:621` change `(logicalOrP expr);` to `(conditionalP expr);`.
+   Then at `parser.kl:674` change `(logicalOrP expr);` to `(conditionalP expr);`.
 3. `checker.kl:33`: change `| MissingField String Type;` to `| MissingField String Type` and add `  | BranchMismatch Type Type;`. In `showTypeError` add:
    `    BranchMismatch a b => str_join ["conditional branches have different types ", showType a, " and ", showType b];`
 4. `checker.kl`, in `checkExpr`, after the `EField` case (:454–466), add:
@@ -198,12 +210,12 @@ Precedence: looser than `||`, tighter than `=`. Right-associative.
 
 ### D. Compound assignment `+= -= *= /=` — `compound/` (sugar)
 
-1. `parser.kl:304`, in `operatorP`'s `forbidden` list, add a line so that `+` `-` `*` `/` never match the start of `+=` and friends:
+1. `parser.kl:307`, in `operatorP`'s `forbidden` list, add a line so that `+` `-` `*` `/` never match the start of `+=` and friends:
    ```
        else if (text == "+") || (text == "-") || (text == "*") || (text == "/") then ["="]
    ```
    (Put it after the `text == "="` line, before the final `else []`.)
-2. `parser.kl:614`, above `assignmentP`, add:
+2. `parser.kl:663`, above `assignmentP`, add:
    ```
    let compoundOpP =
      choiceP [
@@ -214,16 +226,21 @@ Precedence: looser than `||`, tighter than `=`. Right-associative.
        mapP (fn _ => None) (operatorP "=")
      ];
    ```
-3. `parser.kl:620`, in `assignmentP`, replace `` operatorP "=" `thenP` (mapP (fn rhs => EAssign name rhs) expr))) `` with:
+3. `parser.kl:666–674`, replace the whole `assignmentP` with this version. It reads the operator with `compoundOpP` instead of `operatorP "="`:
    ```
-         compoundOpP `bindP` (fn opOpt =>
-           mapP
-             (fn rhs =>
-               match opOpt {
-                 None => EAssign name rhs;
-                 Some op => EAssign name (EBinary op (EVar name) rhs);
-               })
-             expr)))
+   let assignmentP expr =
+     orP
+       (do (bindP) {
+          let! name = identifierP;
+          let! opOpt = compoundOpP;
+          let! rhs = expr;
+          pureP
+            (match opOpt {
+               None => EAssign name rhs;
+               Some op => EAssign name (EBinary op (EVar name) rhs);
+             })
+        })
+       (logicalOrP expr);
    ```
 `x += e` means `x = x + e`, so type checking and string `+=` come for free.
 
@@ -232,7 +249,7 @@ Precedence: looser than `||`, tighter than `=`. Right-associative.
 This one changes the type environment, so it is the largest twist.
 
 1. `syntax.kl:55`: add `  | SConst String (Option TypeExpr) Expr`, and in `showStmt` print it like `SLet` but with `"(const "`.
-2. `parser.kl:316`: add `"const"` to `reservedWords`. Above `statementP`, add a copy of `letStmtP` named `constStmtP` that uses `keywordP "const"` and builds `SConst`. Add `constStmtP,` to `statementP`.
+2. `parser.kl:319`: add `"const"` to `reservedWords`. Above `statementP`, add a copy of `letStmtP` named `constStmtP` that uses `keywordP "const"` and builds `SConst`. Add `constStmtP,` to `statementP`.
 3. `checker.kl`:
    - `:33` add `| AssignToConst String` (+ `showTypeError` line).
    - `:38–39`: each binding becomes `Pair name (Pair type isConst)`: `TypeEnv [[Pair String (Pair Type Bool)]]`.
@@ -247,47 +264,56 @@ Copy the exact code from `../minits-hope-twists/pure-hm/const/checker.kl` lines 
 
 ### F. `for (init; cond; update) { body }` — `forloop/` (sugar)
 
-1. `parser.kl:316`: add `"for"` to `reservedWords`.
-2. `parser.kl:688`, just above `exprStmtP`:
+1. `parser.kl:319`: add `"for"` to `reservedWords`.
+2. `parser.kl:750`, just above `exprStmtP`:
    ```
    let forStmtP stmt =
-     keywordP "for" `thenP`
-       (symbolP "(" `thenP`
-         (orP letStmtP (exprP `bindP` (fn e => symbolP ";" `thenP` (pureP (SExpr e)))) `bindP` (fn init =>
-           exprP `bindP` (fn cond =>
-             symbolP ";" `thenP`
-               (exprP `bindP` (fn update =>
-                 symbolP ")" `thenP`
-                   (mapP
-                     (fn body => SBlock [init, SWhile cond (SBlock [body, SExpr update])])
-                     (blockP stmt))))))));
+     do (bindP) {
+       keywordP "for";
+       symbolP "(";
+       let! init =
+         orP letStmtP
+           (do (bindP) {
+              let! e = exprP;
+              symbolP ";";
+              pureP (SExpr e)
+            });
+       let! cond = exprP;
+       symbolP ";";
+       let! update = exprP;
+       symbolP ")";
+       let! body = blockP stmt;
+       pureP (SBlock [init, SWhile cond (SBlock [body, SExpr update])])
+     };
    ```
-3. `parser.kl:698`: add `    forStmtP stmt,` to `statementP`.
+3. `parser.kl:764`: add `    forStmtP stmt,` to `statementP`.
 
 The outer `SBlock` keeps `i` out of the enclosing scope. `continue` (recipe J) would skip the update in this desugaring. If both twists are asked for, run the update in the loop instead of inside the body.
 
 ### G. `do { body } while (cond);` — `dowhile/` (sugar)
 
-1. `parser.kl:316`: add `"do"` to `reservedWords`.
-2. `parser.kl:688`, above `exprStmtP`:
+1. `parser.kl:319`: add `"do"` to `reservedWords`.
+2. `parser.kl:750`, above `exprStmtP`:
    ```
    let doWhileStmtP stmt =
-     keywordP "do" `thenP`
-       (blockP stmt `bindP` (fn body =>
-         keywordP "while" `thenP`
-           (symbolP "(" `thenP`
-             (exprP `bindP` (fn cond =>
-               symbolP ")" `thenP`
-                 (symbolP ";" `thenP`
-                   (pureP (SBlock [body, SWhile cond body]))))))));
+     do (bindP) {
+       keywordP "do";
+       let! body = blockP stmt;
+       keywordP "while";
+       symbolP "(";
+       let! cond = exprP;
+       symbolP ")";
+       symbolP ";";
+       pureP (SBlock [body, SWhile cond body])
+     };
    ```
-3. `parser.kl:698`: add `    doWhileStmtP stmt,` after `whileStmtP stmt,`.
+3. `parser.kl:764`: add `    doWhileStmtP stmt,` after `whileStmtP stmt,`.
 
 The body runs once, then the loop behaves like `while`.
 
 ### H. Block comments `/* ... */` — `blockcomment/` (parser only)
 
-1. `parser.kl:281`, just above `wsP`:
+1. `parser.kl:284`, just above `wsP`:
    ```
    letrec skipBlockComment start inp =
      match inp {
@@ -307,7 +333,7 @@ The body runs once, then the loop behaves like `while`.
          POk _ rest _ => skipBlockComment inp rest;
        });
    ```
-2. `parser.kl:289`, in `wsP`: change `lineCommentP)));` to `(orP lineCommentP blockCommentP))));`.
+2. `parser.kl:292`, in `wsP`: change `lineCommentP)));` to `(orP lineCommentP blockCommentP))));`.
 
 `advanceInput` keeps line/column correct across newlines inside the comment.
 
@@ -336,12 +362,22 @@ The body runs once, then the loop behaves like `while`.
 The idea: `break` returns an `Err` *signal* that carries the current store. Blocks, ifs, and sequences already pass `Err` up unchanged, so the signal travels until a `while` catches it. The checker uses a marker binding to know it is inside a loop.
 
 1. `syntax.kl:59`: `| SWhile Expr Stmt` (drop the `;`), then add `  | SBreak` and `  | SContinue;`. In `showStmt` :179 add `SBreak => "(break)";` and `SContinue => "(continue)";`.
-2. `parser.kl:316`: add `"break", "continue"` to `reservedWords`. Above `exprStmtP`:
+2. `parser.kl:319`: add `"break", "continue"` to `reservedWords`. Above `exprStmtP`:
    ```
-   let breakStmtP = keywordP "break" `thenP` (symbolP ";" `thenP` (pureP SBreak));
-   let continueStmtP = keywordP "continue" `thenP` (symbolP ";" `thenP` (pureP SContinue));
+   let breakStmtP =
+     do (bindP) {
+       keywordP "break";
+       symbolP ";";
+       pureP SBreak
+     };
+   let continueStmtP =
+     do (bindP) {
+       keywordP "continue";
+       symbolP ";";
+       pureP SContinue
+     };
    ```
-   Add `breakStmtP,` and `continueStmtP,` to `statementP` :694.
+   Add `breakStmtP,` and `continueStmtP,` to `statementP` :760.
 3. `checker.kl:33`: add `| OutsideLoop String` (+ `showTypeError`: `OutsideLoop what => str_join [what, " can only appear inside a loop"];`).
    - `:563` (in `SWhile`): change `checkStmt body env` to `checkStmt body (bindLocal (pushScope env) "%loop" TNull)`. `%loop` can never be a MiniTS name, so there are no clashes.
    - Add these cases to `checkStmt`:
@@ -390,11 +426,11 @@ Then at `tests.kl:661` change `(listAppend evalTests defensiveTests))));` to `(l
 
 These follow the same patterns but were not compiled. Use them as a starting point and test them.
 
-- **New escape** (`\0`, `\'`): add a branch in `escapeChar` `parser.kl:385`. Also add it to `escapeText` `syntax.kl:92` if it must print back.
-- **New primitive type** (`undefined`): `TyUndefined` in `syntax.kl:16`, `primitiveTypeP` :439, `reservedWords` :315, `TUndefined` in `checker.kl:9` (+ `typeEq`, `isPrimitive`, `showType`, `resolveType`), `VUndefined` in `eval.kl:11` (+ `primitiveEquals`, `showValue`), and a literal in `primaryP` :533.
-- **`!=`/`==` as synonyms** of `!==`/`===`: in `equalityP` :603 add `binOpP "==" OpEq` *after* `"==="`. In `operatorP` give `"=="` the forbidden `["="]`, and remove the test `"== is not a MiniTS operator"`.
+- **New escape** (`\0`, `\'`): add a branch in `escapeChar` `parser.kl:392`. Also add it to `escapeText` `syntax.kl:92` if it must print back.
+- **New primitive type** (`undefined`): `TyUndefined` in `syntax.kl:16`, `primitiveTypeP` :446, `reservedWords` :318, `TUndefined` in `checker.kl:9` (+ `typeEq`, `isPrimitive`, `showType`, `resolveType`), `VUndefined` in `eval.kl:11` (+ `primitiveEquals`, `showValue`), and a literal in `primaryP` :573.
+- **`!=`/`==` as synonyms** of `!==`/`===`: in `equalityP` :652 add `binOpP "==" OpEq` *after* `"==="`. In `operatorP` give `"=="` the forbidden `["="]`, and remove the test `"== is not a MiniTS operator"`.
 - **`&&` without short-circuit**: in `eval.kl:316` make `OpAnd`/`OpOr` evaluate both sides like the `_ =>` branch, then combine them.
 - **`let` without an initializer** (defaults to `null`): in `letStmtP`, make `"=" Expr` optional and default to `ENull`. Remove the test `"let requires an initializer"`.
-- **Unary `+`**: in `unaryP` :576 add `mapP (fn _ => OpPlus) (operatorP "+")` (+ `UnOp`, `unOpText`, `EUnary` case, `delta1`).
+- **Unary `+`**: in `unaryP` :625 add `mapP (fn _ => OpPlus) (operatorP "+")` (+ `UnOp`, `unOpText`, `EUnary` case, `delta1`).
 - **Count loop iterations / output log**: add a field to `Store`, for example `Store next cells log` or a counter. Most functions only pattern-match `Store next cells`, so update `allocate`, `storeGet`, `storeSet`, `storeSize`, and `emptyStore`.
 - **Tests runner (pure-hm):** `report` is at `tests.kl:664` and builds an `IO Unit` with `bindIO`. `main` is at `tests.kl:677`. It prints the summary and does not set an exit status.
