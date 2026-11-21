@@ -3,28 +3,62 @@
 # Parsers work directly on the source text: there is no lexer. The input
 # state is the original source plus a cursor (offset, line, column), so
 # backtracking is just "run the other parser on the old Input value".
+#
+# HOW TO READ THIS FILE
+#   Part 1  what a parser IS (a function from Input to Reply)
+#   Part 2  the building blocks, one line of grammar each:
+#             p q -> bindP/thenP   p | q -> orP   p* -> manyP   p+ -> someP
+#             p? -> optionP        p (sep p)* -> sepBy1P   left-assoc ops -> chainl1
+#   Part 3  single characters and exact text
+#   Part 4  tokens: the same, plus "skip the spaces after" (lexeme)
+#   Part 5  number and string literals
+#   Parts 6-8  the MiniTS grammar, written as do (bindP) blocks that read like
+#             the grammar rules in the spec: one line per piece, top to bottom.
+#
+# HOW TO READ A do (bindP) BLOCK
+#   do (bindP) {
+#     keywordP "while";           <- match "while", ignore the result
+#     let! cond = exprP;          <- parse an expression, call it cond
+#     let! body = blockP stmt;    <- parse a block, call it body
+#     pureP (SWhile cond body)    <- the result: the AST built from the pieces
+#   }
+#   If any line fails, the whole block fails (and orP may try another option).
 include "syntax.kl";
 
 # =====================================================================
 # Part 1: Parser representation
 # =====================================================================
 
-# Input source length offset line column   (line and column start at 1)
+# Input source length offset line column
+#   WHERE the parser is in the text. The text itself is never cut up: only
+#   the cursor (offset) moves forward. line/column are kept for error messages.
+#   makeInput "let x" = Input "let x" 5 0 1 1      (offset 0 = line 1, column 1)
 type Input
   = Input String Int Int Int Int;
 
 # ParseError offset line column message
+#   Why and where parsing failed, e.g.  ParseError 9 2 1 "expected ';'"
+#   showParseError prints it as  "2:1: expected ';'".
 type ParseError
   = ParseError Int Int Int String;
 
-# A parser's reply. Success also carries the furthest error seen while
-# parsing (from alternatives that were tried and abandoned); it is used to
-# produce precise messages if a later step fails at the same place.
+# Reply a: what you get back from running a Parser a.
+#   POk value rest err   success: the value, the input AFTER the eaten text,
+#                        and the furthest error seen along the way
+#   PFail err            failure, with where and why
+# The "furthest error" is only for good messages: if an alternative failed
+# deep inside the text, that position is reported instead of the start.
 type Reply a
   = POk a Input ParseError
   | PFail ParseError;
 
-# Parser a   ~   Input -> Reply a
+# Parser a: something that can read an `a` from the input.
+#   It is just a wrapped function  Input -> Reply a.  runP unwraps it and calls it.
+#   charP "x" : Parser String     numberP : Parser Expr     stmtP : Parser Stmt
+#
+# HOW TO READ THE EXAMPLES IN THIS FILE
+#   p on "abc"  =>  ok "a", rest "bc"     p succeeded, produced "a", left "bc"
+#   p on "xyz"  =>  fail 1:1 expected 'a' p failed at line 1, column 1
 type Parser a
   = Parser (Input -> Reply a);
 
@@ -94,14 +128,26 @@ let advanceInput inp c =
 # =====================================================================
 
 # pureP :: a -> Parser a          (succeed without consuming)
+# pureP x : succeed with x and eat nothing.           grammar: (nothing)
+#   pureP 5 on "abc"  =>  ok 5, rest "abc"
+# Usually the LAST line of a do block, to return the AST you built:
+#   pureP (SLet name ann init)
 let pureP x =
   Parser (fn inp => POk x inp noError);
 
 # failP :: String -> Parser a     (fail at the current position)
+# failP msg : always fail, right here, with msg.
+#   failP "nope" on "abc"  =>  fail 1:1 nope
 let failP msg =
   Parser (fn inp => PFail (errorAt inp msg));
 
 # bindP :: Parser a -> (a -> Parser b) -> Parser b      (sequencing)
+# bindP p k : SEQUENCING.  Run p; if it gives x, run (k x) on what is left.
+#   If either part fails, the whole thing fails.          grammar: p q
+#   You rarely call it directly. These all mean the same:
+#     bindP p (fn x => q)        p `bindP` (fn x => q)        do (bindP) { let! x = p; q }
+#   do (bindP) { let! x = charP "a"; let! y = charP "b"; pureP (str_concat y x) }
+#     on "abc"  =>  ok "ba", rest "c"
 let bindP p k =
   Parser (fn inp =>
     match runP p inp {
@@ -114,20 +160,33 @@ let bindP p k =
     });
 
 # mapP :: (a -> b) -> Parser a -> Parser b
+# mapP f p : run p, then change its result with f. Eats exactly what p eats.
+#   mapP (fn d => d == "7") (satisfyP "digit" isDigitChar) on "7x"  =>  ok true, rest "x"
+# Typical use, turning matched text into AST:  mapP (fn _ => EBool true) (keywordP "true")
 let mapP f p =
   p `bindP` (fn x => pureP (f x));
 
 # thenP :: Parser a -> Parser b -> Parser b      (run p, keep q's result)
+# thenP p q : run p, IGNORE its result, then run q and keep q's result.
+#   Written  p `thenP` q,  or just  p;  as a line in a do block.
+#   charP "(" `thenP` charP "x"  on "(x)"  =>  ok "x", rest ")"
 let thenP p q =
   p `bindP` (fn _ => q);
 
 # skipAfter :: Parser a -> Parser b -> Parser a  (run p then q, keep p's result)
+# skipAfter p q : run p, then q, but KEEP p's result (q's is ignored).
+#   The mirror image of thenP: use it for "this thing, then some junk after it".
+#   charP "x" `skipAfter` charP ";"  on "x;y"  =>  ok "x", rest "y"
 let skipAfter p q =
   p `bindP` (fn x => q `bindP` (fn _ => pureP x));
 
 # orP :: Parser a -> Parser a -> Parser a
-#   Ordered choice with full backtracking: if p fails (even after
-#   consuming text), q runs on the original input.
+# orP p q : ALTERNATIVES.  Try p; if p fails, try q.         grammar: p | q
+#   q starts from the SAME place p started, even if p had already eaten text
+#   before failing (this is the "backtracking" the spec asks for).
+#   orP (textP "let") (textP "lex")  on "lex"  =>  ok "lex", rest ""
+#   orP (textP "let") (textP "lex")  on "lot"  =>  fail 1:1 expected 'lex'
+# Order matters: the first alternative that succeeds wins.
 let orP p q =
   Parser (fn inp =>
     match runP p inp {
@@ -140,6 +199,9 @@ let orP p q =
     });
 
 # choiceP :: [Parser a] -> Parser a
+# choiceP [p1, p2, ...] : orP over a whole list; first one that works wins.
+#   grammar: p1 | p2 | ...
+#   choiceP [charP "a", charP "b", charP "c"]  on "c"  =>  ok "c", rest ""
 letrec choiceP ps =
   match ps {
     [] => failP "no alternative matched";
@@ -148,8 +210,9 @@ letrec choiceP ps =
   };
 
 # manyLoop :: Parser a -> Input -> [a] -> ParseError -> Reply [a]
-#   Repeats p. Stops when p fails, and also when p succeeds without
-#   consuming input (so `manyP (pureP x)` cannot loop forever).
+# manyLoop: the loop behind manyP (you never call it yourself).
+#   Keeps running p, collecting results, until p fails. It also stops if p
+#   succeeds WITHOUT eating anything, otherwise `manyP (pureP x)` would loop forever.
 letrec manyLoop p inp acc err =
   match runP p inp {
     PFail e => POk (listReverse acc) inp (furthest err e);
@@ -161,27 +224,48 @@ letrec manyLoop p inp acc err =
   };
 
 # manyP :: Parser a -> Parser [a]           (zero or more)
+# manyP p : ZERO OR MORE p, collected in a list.               grammar: p*
+#   Never fails: no match at all just gives [].
+#   manyP (charP "a")  on "aab"  =>  ok ["a", "a"], rest "b"
+#   manyP (charP "a")  on "b"    =>  ok [], rest "b"
 let manyP p =
   Parser (fn inp => manyLoop p inp [] noError);
 
 # someP :: Parser a -> Parser [a]           (one or more)
+# someP p : ONE OR MORE p.                                      grammar: p+
+#   someP (charP "a")  on "aab"  =>  ok ["a", "a"], rest "b"
+#   someP (charP "a")  on "b"    =>  fail 1:1 expected 'a'
 let someP p =
   p `bindP` (fn x => mapP (fn xs => x :: xs) (manyP p));
 
 # optionP :: Parser a -> Parser (Option a)  (optional)
+# optionP p : p OR NOTHING. Never fails.                        grammar: p?
+#   optionP (charP "a")  on "ab"  =>  ok Some "a", rest "b"
+#   optionP (charP "a")  on "b"   =>  ok None, rest "b"
+# Used for optional parts, e.g. the ": Type" in  let x: number = 1;
 let optionP p =
   orP (mapP (fn x => Some x) p) (pureP None);
 
 # sepBy1P :: Parser a -> Parser s -> Parser [a]   (p (sep p)*)
+# sepBy1P p sep : one or more p, separated by sep.       grammar: p (sep p)*
+#   The separators are thrown away, only the p results are kept.
+#   sepBy1P digit (charP ",")  on "1,2,3)"  =>  ok ["1", "2", "3"], rest ")"
 let sepBy1P p sep =
   p `bindP` (fn x => mapP (fn xs => x :: xs) (manyP (sep `thenP` p)));
 
 # sepByP :: Parser a -> Parser s -> Parser [a]    ((p (sep p)*)?)
+# sepByP p sep : like sepBy1P but zero items is fine.  grammar: (p (sep p)*)?
+#   Used for argument lists, parameter lists and record fields:
+#   sepByP digit (charP ",")  on ")"  =>  ok [], rest ")"
 let sepByP p sep =
   orP (sepBy1P p sep) (pureP []);
 
 # chainl1 :: Parser a -> Parser (a -> a -> a) -> Parser a
-#   p (op p)*, combined with a left fold: a - b - c = (a - b) - c.
+# chainl1 p op : p (op p)*, combined LEFT to RIGHT.   (left-associative operators)
+#   op is a parser that returns a FUNCTION that joins two results.
+#   With p = numbers and op = "-":   1 - 2 - 3   becomes   (1 - 2) - 3
+#   exprP on "1 - 2 - 3"  =>  ok (- (- 1 2) 3)
+# Every binary-operator level (multiplication, addition, ...) is one chainl1.
 let chainl1 p op =
   p `bindP` (fn first =>
     mapP
@@ -189,7 +273,10 @@ let chainl1 p op =
       (manyP (op `bindP` (fn f => mapP (fn x => Pair f x) p))));
 
 # notFollowedByP :: Parser a -> String -> Parser Unit
-#   Succeeds, consuming nothing, exactly when p fails here.
+# notFollowedByP p msg : LOOKAHEAD. Succeeds (eating nothing) only if p would FAIL here.
+#   notFollowedByP (charP "a") "no a here"  on "b"   =>  ok unit, rest "b"
+#   notFollowedByP (charP "a") "no a here"  on "ab"  =>  fail 1:1 no a here
+# Used for "let but not letter", "= but not ===", and "no { after =>".
 let notFollowedByP p msg =
   Parser (fn inp =>
     match runP p inp {
@@ -198,6 +285,8 @@ let notFollowedByP p msg =
     });
 
 # quietP :: Parser a -> Parser a     (forget p's abandoned-alternative errors)
+# quietP p : run p, but forget the "furthest error" it collected.
+#   Only wsP uses it, so failed whitespace attempts never show up in error messages.
 let quietP p =
   Parser (fn inp =>
     match runP p inp {
@@ -206,6 +295,9 @@ let quietP p =
     });
 
 # eofP :: Parser Unit                (end-of-input check)
+# eofP : succeeds only at the very end of the input.
+#   eofP on ""   =>  ok unit
+#   eofP on "x"  =>  fail 1:1 expected end of input
 let eofP =
   Parser (fn inp =>
     if atEnd inp then POk unit inp noError
@@ -216,7 +308,10 @@ let eofP =
 # =====================================================================
 
 # satisfyP :: String -> (String -> Bool) -> Parser String
-#   One character satisfying pred; `desc` names it in error messages.
+# satisfyP desc pred : ONE character for which pred is true.
+#   desc is used in the error message ("expected <desc>").
+#   satisfyP "digit" isDigitChar  on "7x"  =>  ok "7", rest "x"
+#   satisfyP "digit" isDigitChar  on "x7"  =>  fail 1:1 expected digit
 let satisfyP desc pred =
   Parser (fn inp =>
     match inp {
@@ -232,10 +327,15 @@ let satisfyP desc pred =
     });
 
 # charP :: String -> Parser String
+# charP c : exactly the character c.
+#   charP "a"  on "abc"  =>  ok "a", rest "bc"
+#   charP "a"  on "xyz"  =>  fail 1:1 expected 'a'
 let charP c =
   satisfyP (str_join ["'", c, "'"]) (fn d => d == c);
 
 # advanceText :: Input -> String -> Input   (move past every character of s)
+# advanceText inp s : move the cursor past every character of s
+#   (one advanceInput per character, so line/column stay right).
 let advanceText inp s =
   letrec go i cur =
     if i >= str_len s then cur else go (i + 1) (advanceInput cur (str_at s i))
@@ -243,6 +343,8 @@ let advanceText inp s =
     go 0 inp;
 
 # textP :: String -> Parser String    (exact literal text)
+# textP s : exactly the text s (all characters, in order).
+#   textP "==="  on "=== 1"  =>  ok "===", rest " 1"     (spaces are NOT skipped)
 let textP s =
   Parser (fn inp =>
     match inp {
@@ -274,6 +376,8 @@ let isIdentChar c =
 # =====================================================================
 
 # lineCommentP :: Parser Unit     "//" up to (not including) the line break
+# lineCommentP : a // comment, up to but NOT including the line break.
+#   lineCommentP on "// hi\nx"  =>  ok unit, rest "\nx"
 let lineCommentP =
   do (bindP) {
     textP "//";
@@ -303,7 +407,10 @@ let blockCommentP =
       POk _ rest _ => skipBlockComment inp rest;
     });
 
-# wsP :: Parser Unit   spaces, tabs, line breaks, // and /* */ comments
+# wsP :: Parser Unit   spaces, tabs, line breaks and // comments
+# wsP : SKIP all spaces, tabs, line breaks and // comments. Never fails.
+#   wsP on "  // c\n  x"  =>  ok unit, rest "x"
+#   wsP on "x"            =>  ok unit, rest "x"       (nothing to skip is fine)
 let wsP =
   quietP
     (mapP (fn _ => unit)
@@ -314,16 +421,28 @@ let wsP =
           (orP lineCommentP blockCommentP))));   # TWIST: added blockCommentP
 
 # lexeme :: Parser a -> Parser a   (p, then skip trailing whitespace/comments)
+# lexeme p : run p, then skip the whitespace/comments AFTER it.
+#   This is why the grammar never mentions spaces: every token parser
+#   (symbolP, operatorP, keywordP, identifierP, numberP, stringP) is a lexeme,
+#   so each token cleans up the spaces behind itself.
+#   lexeme (textP "let")  on "let   x"  =>  ok "let", rest "x"
+#   (Spaces BEFORE the very first token are skipped once, by programP.)
 let lexeme p =
   p `skipAfter` wsP;
 
 # symbolP :: String -> Parser String   punctuation such as ( ) { } : ; , .
+# symbolP s : punctuation such as ( ) { } : ; , .  then skip spaces.
+#   symbolP "("  on "(  x"  =>  ok "(", rest "x"
 let symbolP s =
   lexeme (textP s);
 
 # operatorP :: String -> Parser String
-#   An operator matched with its longest spelling: e.g. "=" must not be the
-#   start of "===" or "=>", and "<" must not be the start of "<=".
+# operatorP s : an operator, then skip spaces, but ONLY if it is the whole
+#   operator (longest match). "=" refuses to be the start of "===" or "=>",
+#   and "<" refuses to be the start of "<=".
+#   operatorP "="  on "= 1"    =>  ok "=", rest "1"
+#   operatorP "="  on "=== 1"  =>  fail 1:2 '=' is not a complete operator here
+#   operatorP "="  on "=> x"   =>  fail 1:2 '=' is not a complete operator here
 let operatorP text =
   let forbidden =
     if text == "=" then ["=", ">"]
@@ -337,6 +456,7 @@ let operatorP text =
           (str_join ["'", text, "' is not a complete operator here"])));
 
 # reservedWords: cannot be identifiers, parameter names, or field names.
+#   (A twist that adds a keyword, like `for` or `const`, adds it here.)
 let reservedWords =
   ["let", "if", "else", "while", "true", "false", "null", "number", "boolean", "string"];
 
@@ -344,6 +464,8 @@ let isReserved w =
   listContainsString w reservedWords;
 
 # identRawP :: Parser String   [A-Za-z_][A-Za-z0-9_]*  (no whitespace skipping)
+# identRawP : [A-Za-z_][A-Za-z0-9_]*   (does NOT skip spaces after)
+#   identRawP  on "x1 = 2"  =>  ok "x1", rest " = 2"
 let identRawP =
   do (bindP) {
     let! c = satisfyP "identifier" isIdentStart;
@@ -352,7 +474,10 @@ let identRawP =
   };
 
 # keywordP :: String -> Parser String
-#   The word followed by an identifier boundary, so "letter" is not "let".
+# keywordP w : the word w, NOT followed by more identifier characters,
+#   then skip spaces. That boundary check is why "letter" is not "let".
+#   keywordP "let"  on "let x"   =>  ok "let", rest "x"
+#   keywordP "let"  on "letter"  =>  fail 1:4 expected 'let'
 let keywordP w =
   lexeme
     (textP w `skipAfter`
@@ -360,6 +485,9 @@ let keywordP w =
         (str_join ["expected '", w, "'"])));
 
 # identifierP :: Parser String   an identifier that is not a reserved word
+# identifierP : an identifier that is NOT a reserved word, then skip spaces.
+#   identifierP  on "count = 1"  =>  ok "count", rest "= 1"
+#   identifierP  on "while (x)"  =>  fail 1:1 reserved word 'while' cannot be used as an identifier
 let identifierP =
   lexeme
     (Parser (fn inp =>
@@ -388,6 +516,9 @@ letrec pow10 k =
   if k <= 0 then 1.0 else 10.0 *. pow10 (k - 1);
 
 # numberRawP :: Parser Float     [0-9]+(\.[0-9]+)?
+# numberRawP : [0-9]+(\.[0-9]+)?  as a Float (no spaces skipped).
+#   numberRawP  on "3.25;"  =>  ok 3.25, rest ";"
+#   A leading minus is NOT part of the number: -5 is the unary operator - applied to 5.
 let numberRawP =
   do (bindP) {
     let! whole = someP (satisfyP "digit" isDigitChar);
@@ -400,6 +531,9 @@ let numberRawP =
   };
 
 # numberP :: Parser Expr   (rejects literals that overflow to infinity)
+# numberP : a number literal as an Expr, then skip spaces.
+#   numberP  on "42 ;"  =>  ok ENum 42, rest ";"
+#   Rejects literals so long they overflow to infinity.
 let numberP =
   lexeme
     (Parser (fn inp =>
@@ -420,7 +554,9 @@ let escapeChar d =
   else None;
 
 # stringBody :: Input -> Input -> [String] -> Reply String
-#   start is the position of the opening quote (for "unterminated" errors).
+# stringBody : the loop that reads a string's characters after the opening quote.
+#   Decodes \" \\ \n \r \t, rejects unknown escapes and raw line breaks.
+#   start is the opening quote's position, used for "unterminated" errors.
 letrec stringBody start inp acc =
   match inp {
     Input src len off _ _ =>
@@ -448,6 +584,8 @@ letrec stringBody start inp acc =
   };
 
 # stringP :: Parser Expr
+# stringP : a "..." string literal as an Expr (contents decoded), then skip spaces.
+#   stringP  on "\"a\\nb\" x"  =>  ok EStr "a<newline>b", rest "x"
 let stringP =
   lexeme
     (Parser (fn inp =>
@@ -465,6 +603,7 @@ let stringP =
 #   Type ::= PrimitiveType | FunctionType | RecordType
 # =====================================================================
 
+# PrimitiveType ::= "number" | "boolean" | "string" | "null"
 let primitiveTypeP =
   choiceP [
     mapP (fn _ => TyNumber) (keywordP "number"),
@@ -518,7 +657,11 @@ let recordTypeP ty =
     pureP (TyRecord fields)
   };
 
-# typeAt / typeP: the knot for the recursive Type grammar.
+# typeAt / typeP: the full Type parser.
+#   Types contain types, e.g. (f: (x: number) => number) => string. So the
+#   sub-parsers get `Parser typeAt` as their `ty` argument: "parse a type here".
+#   typeP  on "(x: number) => string"  =>  ok TyFun [x: number] string
+#   typeP  on "{ a: number; }"         =>  ok TyRecord [a: number]
 letrec typeAt inp =
   runP
     (choiceP [
@@ -549,6 +692,7 @@ let paramP =
 
 # ArrowFunction ::= "(" Parameters? ")" ":" Type "=>" Expr
 #   A body that is a record literal must be parenthesized.
+#   exprP  on "(x: number): number => x + 1"  =>  ok (fn [x: number] number (+ x 1))
 let arrowP expr =
   do (bindP) {
     symbolP "(";
@@ -563,6 +707,7 @@ let arrowP expr =
   };
 
 # "(" Expr ")"
+#   exprP  on "(x) * 2"  =>  ok (* x 2)      (the arrow attempt fails at ")", then this runs)
 let parenP expr =
   do (bindP) {
     symbolP "(";
@@ -581,6 +726,7 @@ let recordFieldP expr =
   };
 
 # Record ::= "{" (RecordField ("," RecordField)*)? "}"
+#   exprP  on "{ a: 1, b: true }"  =>  ok {a: 1, b: true}
 let recordP expr =
   do (bindP) {
     symbolP "{";
@@ -696,6 +842,11 @@ let assignmentP expr =
     (logicalOrP expr);
 
 # exprAt / exprP: the knot for the recursive Expr grammar.  Expr ::= Assignment
+#   Expressions contain expressions (in parentheses, call arguments, arrow
+#   bodies), so every level gets `expr` = "parse a whole expression here".
+#   exprP  on "1 + 2 * 3"   =>  ok (+ 1 (* 2 3))         * binds tighter
+#   exprP  on "x = y = 1"   =>  ok (= x (= y 1))         = groups to the right
+#   exprP  on "-f(1).a"     =>  ok (- (. (call f [1]) a)) postfix before unary
 letrec exprAt inp =
   runP (assignmentP (Parser exprAt)) inp;
 
@@ -723,6 +874,7 @@ letrec stmtsLoop stmt close closeDesc inp acc =
   };
 
 # Block ::= "{" Statement* "}"
+#   stmtP  on "{ let a = 1; }"  =>  ok {(let a 1)}
 let blockP stmt =
   do (bindP) {
     symbolP "{";
@@ -770,6 +922,7 @@ let whileStmtP stmt =
   };
 
 # ExprStmt ::= Expr ";"    A leading "{" at statement position is a block.
+#   stmtP  on "f(1);"  =>  ok (expr (call f [1]))
 let exprStmtP =
   do (bindP) {
     notFollowedByP (textP "{") "expected a statement";
@@ -788,6 +941,10 @@ let statementP stmt =
     exprStmtP
   ];
 
+# stmtAt / stmtP: the full Statement parser (statements contain blocks of statements).
+#   stmtP  on "let x: number = 5;"            =>  ok (let x: number 5)
+#   stmtP  on "if (c) { x = 1; }"             =>  ok (if c {(expr (= x 1))} {})
+#   stmtP  on "while (i < 3) { i = i + 1; }"  =>  ok (while (< i 3) {(expr (= i (+ i 1)))})
 letrec stmtAt inp =
   runP (statementP (Parser stmtAt)) inp;
 

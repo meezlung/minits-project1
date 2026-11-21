@@ -1,5 +1,15 @@
 # eval.kl -- big-step evaluation with environments and a store
 #            (Sections 4 and 5 of the spec).
+#
+# HOW TO READ THIS FILE
+#   Env   : name -> location (an Int)      "which box does x mean here?"
+#   Store : location -> Value              "what is in each box right now?"
+#   Reading x = look up its location in Env, then the value in Store.
+#   Assigning x = 5 = look up its location, then put 5 in that box (Store only).
+#   Every function returns the NEW store along with its result, so effects
+#   (assignments) flow left to right:
+#     Ok (Pair v store1)    <- the value, and the store after computing it
+#   Each case is labelled with the spec's rule name (E-Var, E-App, S-Let, ...).
 include "checker.kl";
 
 # =====================================================================
@@ -17,12 +27,14 @@ type Value
   | VClosure [String] Expr [[Pair String Int]];
 
 # ρ : Identifier -> Location. A stack of scopes, innermost first.
+#   Env [[y ↦ 3], [x ↦ 0]]  = y lives in box 3, x in box 0
 type Env
   = Env [[Pair String Int]];
 
 # σ : Location -> Value.  Store nextFreeLocation cells
 #   Locations are integers handed out by a counter that only goes up, so a
 #   location still in the store is never reused.
+#   Store 2 [1 ↦ VNum 7, 0 ↦ VStr "a"]   = boxes 0 and 1 used; next new box is 2
 type Store
   = Store Int [Pair Int Value];
 
@@ -91,12 +103,15 @@ let emptyStore =
   Store 0 [];
 
 # allocate :: Store -> Value -> Pair Int Store    (fresh ℓ ∉ dom(σ))
+#   Make a NEW box holding v; returns the box number and the new store.
+#   allocate (Store 2 cells) v  ->  Pair 2 (Store 3 (2 ↦ v :: cells))
 let allocate store v =
   match store {
     Store next cells => Pair next (Store (next + 1) (Pair next v :: cells));
   };
 
 # storeGet :: Store -> Int -> Option Value         σ(ℓ)
+# storeGet :: Store -> Int -> Option Value         σ(ℓ)   (what is in box ℓ?)
 let storeGet store loc =
   letrec go cells =
     match cells {
@@ -109,6 +124,7 @@ let storeGet store loc =
     };
 
 # storeSet :: Store -> Int -> Value -> Store       σ[ℓ ↦ v]  (replace the entry)
+#   Assignment: same box, new contents. The Env is not touched.
 let storeSet store loc v =
   letrec go cells =
     match cells {
@@ -194,6 +210,9 @@ let ordering what a b numTest cmpTest =
   };
 
 # delta2 :: BinOp -> Value -> Value -> Result Value RuntimeError
+#   The spec's δ2 table: what each strict binary operator computes.
+#   A new operator twist adds one line here (and one in binaryResultType).
+#   OpAdd (VNum 1) (VNum 2) -> Ok (VNum 3)     OpDiv (VNum 1) (VNum 0) -> Err DivisionByZero
 let delta2 op a b =
   let what = str_join ["invalid operands for ", binOpText op] in
   match op {

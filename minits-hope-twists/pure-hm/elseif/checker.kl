@@ -1,4 +1,14 @@
 # checker.kl -- static type checking (Section 3 of the spec).
+#
+# HOW TO READ THIS FILE
+#   Every case of checkExpr / checkStmt is one typing rule from the spec, and
+#   is labelled with the rule's name (T-Var, T-Assign, T-Fun, T-App, T-Let, ...).
+#   Reading a case:   Γ ⊢ e : τ   is   checkExpr e env  returning  Ok τ.
+#     match checkExpr l env {          <- premise 1: type the left operand
+#       Err err => Err err;            <- a premise failed: pass the error on
+#       Ok lt => ...                   <- it has type lt; go on to premise 2
+#   The long "match ... Err err => Err err; Ok x => ..." staircases are just
+#   "check this, then this, then this, stopping at the first error".
 include "parser.kl";
 
 # =====================================================================
@@ -35,6 +45,7 @@ type TypeError
 # TypeEnv: a stack of scopes, innermost first. Each scope is a list of
 # (name, type) bindings. Lists are immutable, so extending a scope never
 # changes an environment that was captured earlier.
+#   TypeEnv [[y: string], [x: number]]   = inside a block (y) inside the globals (x)
 type TypeEnv
   = TypeEnv [[Pair String Type]];
 
@@ -43,12 +54,16 @@ let emptyTypeEnv =
   TypeEnv [[]];
 
 # pushScope :: TypeEnv -> TypeEnv          push(Γ)
+#   Enter a block or function body: add a new empty innermost scope.
+#   TypeEnv [[x: number]]  ->  TypeEnv [[], [x: number]]
 let pushScope env =
   match env {
     TypeEnv scopes => TypeEnv ([] :: scopes);
   };
 
 # bindLocal :: TypeEnv -> String -> Type -> TypeEnv      Γ[x ↦ τ]
+#   Add a binding to the INNERMOST scope only.
+#   bindLocal (TypeEnv [[], [x: number]]) "y" TString  ->  TypeEnv [[y: string], [x: number]]
 let bindLocal env name t =
   match env {
     TypeEnv [] => TypeEnv [[Pair name t]];
@@ -63,6 +78,8 @@ letrec scopeLookup name scope =
   };
 
 # lookupType :: TypeEnv -> String -> Option Type       Γ(x), innermost first
+#   The innermost binding wins, which is how shadowing works:
+#   lookupType (TypeEnv [[x: string], [x: number]]) "x"  ->  Some TString
 let lookupType env name =
   letrec go scopes =
     match scopes {
@@ -79,6 +96,8 @@ let lookupType env name =
     };
 
 # declaredLocally :: TypeEnv -> String -> Bool        x ∈ local(Γ)
+#   Only looks at the innermost scope: used to reject  let x = 1; let x = 2;
+#   in the same scope, while still allowing an inner block to shadow x.
 let declaredLocally env name =
   match env {
     TypeEnv [] => false;
@@ -103,6 +122,7 @@ letrec fieldTypeOf name fields =
 # typeEq :: Type -> Type -> Bool
 #   Functions: parameters in order and return type exactly.
 #   Records: same field set and corresponding types, in any order.
+#   typeEq {x: number, y: string} {y: string, x: number}  ->  true
 letrec typeEq a b =
   letrec listEq xs ys =
     match xs {
@@ -208,6 +228,9 @@ let showTypeError e =
 # =====================================================================
 
 # resolveType :: TypeExpr -> Result Type TypeError
+#   Turn an annotation as written (TypeExpr) into a checked Type: rejects
+#   duplicate record fields / function-type parameters, then drops parameter
+#   names, since (x: number) => number and (y: number) => number are the same type.
 letrec resolveType te =
   letrec resolveList tes =
     match tes {
@@ -285,8 +308,11 @@ letrec resolveTypeList tes =
 # Expressions:  checkExpr : Expr -> TypeEnv -> Result Type TypeError
 # =====================================================================
 
-# Operator typing for the strict binary operators (T-Arith, T-Concat,
-# T-Compare, T-Eq, T-Logic). Both operand types are already known.
+# binaryResultType op l r : the type of  l op r,  given both operand types.
+#   One line per operator; this is where T-Arith, T-Concat, T-Compare,
+#   T-Eq and T-Logic live. A new operator twist adds one line here.
+#   OpAdd TNumber TNumber -> Ok TNumber     OpAdd TString TString -> Ok TString
+#   OpAdd TNumber TString -> Err (InvalidOperands "+" ...)
 let binaryResultType op l r =
   let bad = Err (InvalidOperands (binOpText op) l r) in
   let bothNumbers =

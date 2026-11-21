@@ -29,20 +29,20 @@ Pipeline: `run src` (`minits.kl:14`) = **parse** → **checkProgram** → **exec
 | Stage | File | What to look at |
 |---|---|---|
 | AST | `syntax.kl` | `type BinOp` :31, `type Expr` :37, `type Stmt` :54, printers `binOpText` :75, `showExpr` :135, `showStmt` :169 |
-| Parser combinators | `parser.kl` | `bindP` :105, `orP` :131 (backtracks), `choiceP` :143, `manyP` :164, `optionP` :172, `sepByP` :180, `chainl1` :185, `notFollowedByP` :193 |
-| Tokens | `parser.kl` | `wsP` :285 (whitespace + comments), `symbolP` :299, `operatorP` :305 (longest-match rules), `reservedWords` :318, `keywordP` :334, `identifierP` :341 |
-| Literals | `parser.kl` | `numberRawP` :369, `escapeChar` :392, `stringBody` :402 |
-| Types (syntax) | `parser.kl` | `primitiveTypeP` :446, `functionTypeP` :464, `recordTypeP` :484 |
-| Expressions, by precedence (loosest at the bottom) | `parser.kl` | `primaryP` :573 → `postfixP` :617 → `unaryP` :625 → `multiplicationP` :639 → `additionP` :643 → `comparisonP` :647 → `equalityP` :652 → `logicalAndP` :656 → `logicalOrP` :660 → `assignmentP` :666 |
-| Statements | `parser.kl` | `blockP` :704, `letStmtP` :712, `ifStmtP` :724, `whileStmtP` :740, `exprStmtP` :751, **`statementP` :760** (list of alternatives) |
-| Types (semantic) | `checker.kl` | `type Type` :9, **`type TypeError` :18**, `showTypeError` :179, `typeEq` :106, `resolveType` :211 |
-| Operator typing | `checker.kl` | **`binaryResultType` :290** (one line per operator) |
-| Expression typing | `checker.kl` | `checkExpr` :328 (`EAssign` :376, `EUnary` :387, `EBinary` :398, `EFun` :409, `ECall` :436, `EField` :454, `ERecord` :469) |
-| Statement typing | `checker.kl` | `checkStmt` :496 (`SLet` :510, `SBlock` :537, `SIf` :544, `SWhile` :559) |
-| Values / store | `eval.kl` | `type Value` :11, `type RuntimeError` :33, `allocate` :94, `storeSet` :112 |
-| Operators at runtime | `eval.kl` | `delta1` :165 (unary), **`delta2` :189** (strict binary) |
-| Expression eval | `eval.kl` | `evalExpr` :257 (`EAssign` :292, `EBinary` :313 with `&&`/`||` short-circuit, `ECall` :379) |
-| Statement eval | `eval.kl` | `execStmt` :438 (`SLet` :453, `SBlock` :473, `SIf` :480, `SWhile` :496), `execProgram` :529 |
+| Parser combinators | `parser.kl` | `bindP` :151, `orP` :190 (backtracks), `choiceP` :205, `manyP` :231, `optionP` :246, `sepByP` :260, `chainl1` :269, `notFollowedByP` :280 |
+| Tokens | `parser.kl` | `wsP` :392 (whitespace + comments), `symbolP` :414, `operatorP` :424 (longest-match rules), `reservedWords` :438, `keywordP` :459, `identifierP` :469 |
+| Literals | `parser.kl` | `numberRawP` :500, `escapeChar` :526, `stringBody` :538 |
+| Types (syntax) | `parser.kl` | `primitiveTypeP` :585, `functionTypeP` :603, `recordTypeP` :623 |
+| Expressions, by precedence (loosest at the bottom) | `parser.kl` | `primaryP` :719 → `postfixP` :763 → `unaryP` :771 → `multiplicationP` :785 → `additionP` :789 → `comparisonP` :793 → `equalityP` :798 → `logicalAndP` :802 → `logicalOrP` :806 → `assignmentP` :812 |
+| Statements | `parser.kl` | `blockP` :856, `letStmtP` :864, `ifStmtP` :876, `whileStmtP` :892, `exprStmtP` :904, **`statementP` :913** (list of alternatives) |
+| Types (semantic) | `checker.kl` | `type Type` :19, **`type TypeError` :28**, `showTypeError` :199, `typeEq` :126, `resolveType` :234 |
+| Operator typing | `checker.kl` | **`binaryResultType` :316** (one line per operator) |
+| Expression typing | `checker.kl` | `checkExpr` :354 (`EAssign` :402, `EUnary` :413, `EBinary` :424, `EFun` :435, `ECall` :462, `EField` :480, `ERecord` :495) |
+| Statement typing | `checker.kl` | `checkStmt` :522 (`SLet` :536, `SBlock` :563, `SIf` :570, `SWhile` :585) |
+| Values / store | `eval.kl` | `type Value` :21, `type RuntimeError` :45, `allocate` :108, `storeSet` :128 |
+| Operators at runtime | `eval.kl` | `delta1` :181 (unary), **`delta2` :208** (strict binary) |
+| Expression eval | `eval.kl` | `evalExpr` :276 (`EAssign` :311, `EBinary` :332 with `&&`/`||` short-circuit, `ECall` :398) |
+| Statement eval | `eval.kl` | `execStmt` :457 (`SLet` :472, `SBlock` :492, `SIf` :499, `SWhile` :515), `execProgram` :548 |
 | Tests | `tests.kl` | `typeErrorKind` :112, `defensiveTests` :625, `# Running` :653, `allTests` :656 |
 
 ### Four ideas the whole design rests on
@@ -71,7 +71,7 @@ Common to all three dialects (KLang 12.0.0):
 
 - **Float vs Int operators.** MiniTS numbers are `Float`, so use `+. -. *. /.` and `<. <=. >. >=.`. Plain `+ - * / < <= > >=` are **Int-only** (offsets, lengths, `str_ord`). Getting this wrong was the real compiler error in this project: `x < y` in `delta2` and `x < 0.0` in `floatToText`. `==` and `!=` work on any type.
 - **`Option` is built in** (`None | Some a`). Do not declare it, or you get a "duplicate type declaration" error. `Result` and `Pair` are ours, in `util.kl`.
-- **`&&` / `||` in KLang evaluate both sides.** Never write `ok && recursiveCall ...` expecting a short-circuit. Use `if ... then ... else false`. MiniTS's own `&&`/`||` do short-circuit; that is done explicitly in `eval.kl:313`.
+- **`&&` / `||` in KLang evaluate both sides.** Never write `ok && recursiveCall ...` expecting a short-circuit. Use `if ... then ... else false`. MiniTS's own `&&`/`||` do short-circuit; that is done explicitly in `eval.kl:332`.
 - Useful built-ins: `str_len`, `str_at s i`, `str_slice s from to` (it errors if out of range), `str_concat`, `str_join [..]`, `str_ord`, `str_compare a b` (-1/0/1), `int_to_float`, `float_to_int` (truncates toward 0), `float_to_string`, `int_to_string`.
 - Patterns can be nested: `Err (LoopBreak st) => ...`, `Some (VNum n) => ...`, `VBool true => ...`.
 
@@ -85,12 +85,12 @@ Ask: **is it new syntax only (sugar), a new operator, a new expression, or a new
 |---|---|---|---|---|---|
 | Sugar (else-if, for, do-while, `+=`) | – | ✔ build existing AST | – | – | ✔ |
 | New binary operator (`%`) | `BinOp` + `binOpText` | one `binOpP` at the right precedence level | one line in `binaryResultType` | one line in `delta2` | ✔ |
-| New unary operator | `UnOp` + `unOpText` | `unaryP` :625 | `EUnary` case :387 | `delta1` :165 | ✔ |
+| New unary operator | `UnOp` + `unOpText` | `unaryP` :771 | `EUnary` case :413 | `delta1` :181 | ✔ |
 | New expression (`?:`) | `Expr` + `showExpr` | new level, or new `primaryP` alternative | new `checkExpr` case (+ maybe a new `TypeError`) | new `evalExpr` case | ✔ |
-| New statement (`const`, `break`) | `Stmt` + `showStmt` | new `xxxStmtP` + add it to `statementP` :760 | new `checkStmt` case | new `execStmt` case | ✔ |
-| New keyword | – | add to `reservedWords` :318, parse with `keywordP` | | | test that `let kw = 1;` fails and `let kwx = 1;` passes |
-| New `TypeError` | | | add a constructor :18–33 + a line in `showTypeError` :179 | | **add it to `typeErrorKind` :112**, or tests.kl will not compile (non-exhaustive match) |
-| New `RuntimeError` | | | | constructor :33 + `showRuntimeError` :151 | |
+| New statement (`const`, `break`) | `Stmt` + `showStmt` | new `xxxStmtP` + add it to `statementP` :913 | new `checkStmt` case | new `execStmt` case | ✔ |
+| New keyword | – | add to `reservedWords` :438, parse with `keywordP` | | | test that `let kw = 1;` fails and `let kwx = 1;` passes |
+| New `TypeError` | | | add a constructor :28–33 + a line in `showTypeError` :199 | | **add it to `typeErrorKind` :112**, or tests.kl will not compile (non-exhaustive match) |
+| New `RuntimeError` | | | | constructor :45 + `showRuntimeError` :167 | |
 
 **Watch out:** adding a constructor to `Expr`/`Stmt`/`BinOp`/`TypeError` makes every `match` on that type non-exhaustive. In pure-hm that is a **compile error** that names the file, line and missing case (`non-exhaustive match; missing case: X`). Fix each place it names: usually the printer in `syntax.kl`, `showTypeError`, and `typeErrorKind` in tests.
 
@@ -107,15 +107,15 @@ Each recipe lists **file:line → what to do**, then the code, then tests. The c
      = OpAdd | OpSub | OpMul | OpDiv | OpMod
    ```
 2. `syntax.kl:80`, in `binOpText`, after `OpDiv => "/";`, add `    OpMod => "%";`
-3. `parser.kl:640`, in `multiplicationP`, replace the `orP` with a `choiceP`:
+3. `parser.kl:786`, in `multiplicationP`, replace the `orP` with a `choiceP`:
    ```
      chainl1 (unaryP expr) (choiceP [binOpP "*" OpMul, binOpP "/" OpDiv, binOpP "%" OpMod]);
    ```
-4. `checker.kl:305`, in `binaryResultType`, after the `OpDiv` line:
+4. `checker.kl:331`, in `binaryResultType`, after the `OpDiv` line:
    ```
          OpMod => if bothNumbers then Ok TNumber else bad;
    ```
-5. `eval.kl:199`, in `delta2`, after the `OpDiv` line. This uses JS semantics, so the result takes the sign of the dividend: `-7 % 3 = -1`.
+5. `eval.kl:218`, in `delta2`, after the `OpDiv` line. This uses JS semantics, so the result takes the sign of the dividend: `-7 % 3 = -1`.
    ```
        OpMod =>
          numbers what a b (fn x y =>
@@ -125,15 +125,15 @@ Each recipe lists **file:line → what to do**, then the code, then tests. The c
 Tests: `17 % 5` → 2, `-7 % 3` → -1, `5.5 % 2` → 1.5, `1 % 0` → DivisionByZero, `"x" % 2` → InvalidOperands, and `a % b % c` parses as `(% (% a b) c)`.
 
 **Variations:**
-- A different operator at the *addition* level: edit `additionP` :643 instead.
+- A different operator at the *addition* level: edit `additionP` :789 instead.
 - An operator at a *new* precedence level, for example `**`, tighter than `*`: write `powerP expr` between `unaryP` and `multiplicationP` and make `multiplicationP` call it.
   - **Right-associative**: `` letrec powerP expr = unaryP expr `bindP` (fn l => orP (operatorP "**" `bindP` (fn _ => mapP (fn r => EBinary OpPow l r) (powerP expr))) (pureP l)); ``
-  - Also add `"*"` to the `forbidden` rules in `operatorP` :305 (`else if text == "*" then ["*"]`), so that `*` never matches the start of `**`.
+  - Also add `"*"` to the `forbidden` rules in `operatorP` :424 (`else if text == "*" then ["*"]`), so that `*` never matches the start of `**`.
   - KLang has no `pow` built-in. Compute it by repeated multiplication for whole-number exponents.
 
 ### B. `else if` — `elseif/` (sugar, parser only)
 
-`parser.kl:724–737`, `ifStmtP`. The function must call itself, so change `let ifStmtP` to `letrec ifStmtP`. Then replace the line `` let! elseOpt = optionP (keywordP "else" `thenP` (blockP stmt)); `` (:731) with:
+`parser.kl:876–889`, `ifStmtP`. The function must call itself, so change `let ifStmtP` to `letrec ifStmtP`. Then replace the line `` let! elseOpt = optionP (keywordP "else" `thenP` (blockP stmt)); `` (:883) with:
 ```
     let! elseOpt =
       optionP
@@ -154,7 +154,7 @@ Precedence: looser than `||`, tighter than `=`. Right-associative.
    ```
        ECond c a b => str_join ["(? ", showExpr c, " ", showExpr a, " ", showExpr b, ")"];
    ```
-2. `parser.kl:663`, just above `assignmentP`, add:
+2. `parser.kl:809`, just above `assignmentP`, add:
    ```
    letrec conditionalP expr =
      do (bindP) {
@@ -170,10 +170,10 @@ Precedence: looser than `||`, tighter than `=`. Right-associative.
          (pureP c)
      };
    ```
-   Then at `parser.kl:674` change `(logicalOrP expr);` to `(conditionalP expr);`.
-3. `checker.kl:33`: change `| MissingField String Type;` to `| MissingField String Type` and add `  | BranchMismatch Type Type;`. In `showTypeError` add:
+   Then at `parser.kl:820` change `(logicalOrP expr);` to `(conditionalP expr);`.
+3. `checker.kl:43`: change `| MissingField String Type;` to `| MissingField String Type` and add `  | BranchMismatch Type Type;`. In `showTypeError` add:
    `    BranchMismatch a b => str_join ["conditional branches have different types ", showType a, " and ", showType b];`
-4. `checker.kl`, in `checkExpr`, after the `EField` case (:454–466), add:
+4. `checker.kl`, in `checkExpr`, after the `EField` case (:480–466), add:
    ```
        ECond c a b =>
          match checkExpr c env {
@@ -193,7 +193,7 @@ Precedence: looser than `||`, tighter than `=`. Right-associative.
              };
          };
    ```
-5. `eval.kl`, in `evalExpr`, before the `ERecord` case (:415). This evaluates **only** the chosen branch:
+5. `eval.kl`, in `evalExpr`, before the `ERecord` case (:434). This evaluates **only** the chosen branch:
    ```
        ECond c a b =>
          match evalExpr c env store {
@@ -210,12 +210,12 @@ Precedence: looser than `||`, tighter than `=`. Right-associative.
 
 ### D. Compound assignment `+= -= *= /=` — `compound/` (sugar)
 
-1. `parser.kl:307`, in `operatorP`'s `forbidden` list, add a line so that `+` `-` `*` `/` never match the start of `+=` and friends:
+1. `parser.kl:426`, in `operatorP`'s `forbidden` list, add a line so that `+` `-` `*` `/` never match the start of `+=` and friends:
    ```
        else if (text == "+") || (text == "-") || (text == "*") || (text == "/") then ["="]
    ```
    (Put it after the `text == "="` line, before the final `else []`.)
-2. `parser.kl:663`, above `assignmentP`, add:
+2. `parser.kl:809`, above `assignmentP`, add:
    ```
    let compoundOpP =
      choiceP [
@@ -226,7 +226,7 @@ Precedence: looser than `||`, tighter than `=`. Right-associative.
        mapP (fn _ => None) (operatorP "=")
      ];
    ```
-3. `parser.kl:666–674`, replace the whole `assignmentP` with this version. It reads the operator with `compoundOpP` instead of `operatorP "="`:
+3. `parser.kl:812–820`, replace the whole `assignmentP` with this version. It reads the operator with `compoundOpP` instead of `operatorP "="`:
    ```
    let assignmentP expr =
      orP
@@ -249,13 +249,13 @@ Precedence: looser than `||`, tighter than `=`. Right-associative.
 This one changes the type environment, so it is the largest twist.
 
 1. `syntax.kl:55`: add `  | SConst String (Option TypeExpr) Expr`, and in `showStmt` print it like `SLet` but with `"(const "`.
-2. `parser.kl:319`: add `"const"` to `reservedWords`. Above `statementP`, add a copy of `letStmtP` named `constStmtP` that uses `keywordP "const"` and builds `SConst`. Add `constStmtP,` to `statementP`.
+2. `parser.kl:439`: add `"const"` to `reservedWords`. Above `statementP`, add a copy of `letStmtP` named `constStmtP` that uses `keywordP "const"` and builds `SConst`. Add `constStmtP,` to `statementP`.
 3. `checker.kl`:
-   - `:33` add `| AssignToConst String` (+ `showTypeError` line).
-   - `:38–39`: each binding becomes `Pair name (Pair type isConst)`: `TypeEnv [[Pair String (Pair Type Bool)]]`.
-   - `:52` `bindLocal`: keep its name and arguments (as `bindWith false`) and add `bindConst = bindWith true`.
-   - `:59` `scopeLookup`: return only the type. Add `isConstVar env name`, which finds the **innermost** binding and returns its flag.
-   - `:376` `EAssign`: after `Some t =>`, insert `if isConstVar env x then Err (AssignToConst x) else`.
+   - `:43` add `| AssignToConst String` (+ `showTypeError` line).
+   - `:49–39`: each binding becomes `Pair name (Pair type isConst)`: `TypeEnv [[Pair String (Pair Type Bool)]]`.
+   - `:67` `bindLocal`: keep its name and arguments (as `bindWith false`) and add `bindConst = bindWith true`.
+   - `:74` `scopeLookup`: return only the type. Add `isConstVar env name`, which finds the **innermost** binding and returns its flag.
+   - `:402` `EAssign`: after `Some t =>`, insert `if isConstVar env x then Err (AssignToConst x) else`.
    - Add an `SConst` case to `checkStmt`, a copy of `SLet` that calls `bindConst`.
 4. `eval.kl`, `execStmt`: `SConst x ann init => execStmt (SLet x ann init) env store;`. At runtime a const behaves exactly like a let.
 5. `tests.kl:128`: add `AssignToConst _ => "AssignToConst";` to `typeErrorKind`.
@@ -264,8 +264,8 @@ Copy the exact code from `../minits-hope-twists/pure-hm/const/checker.kl` lines 
 
 ### F. `for (init; cond; update) { body }` — `forloop/` (sugar)
 
-1. `parser.kl:319`: add `"for"` to `reservedWords`.
-2. `parser.kl:750`, just above `exprStmtP`:
+1. `parser.kl:439`: add `"for"` to `reservedWords`.
+2. `parser.kl:902`, just above `exprStmtP`:
    ```
    let forStmtP stmt =
      do (bindP) {
@@ -286,14 +286,14 @@ Copy the exact code from `../minits-hope-twists/pure-hm/const/checker.kl` lines 
        pureP (SBlock [init, SWhile cond (SBlock [body, SExpr update])])
      };
    ```
-3. `parser.kl:764`: add `    forStmtP stmt,` to `statementP`.
+3. `parser.kl:917`: add `    forStmtP stmt,` to `statementP`.
 
 The outer `SBlock` keeps `i` out of the enclosing scope. `continue` (recipe J) would skip the update in this desugaring. If both twists are asked for, run the update in the loop instead of inside the body.
 
 ### G. `do { body } while (cond);` — `dowhile/` (sugar)
 
-1. `parser.kl:319`: add `"do"` to `reservedWords`.
-2. `parser.kl:750`, above `exprStmtP`:
+1. `parser.kl:439`: add `"do"` to `reservedWords`.
+2. `parser.kl:902`, above `exprStmtP`:
    ```
    let doWhileStmtP stmt =
      do (bindP) {
@@ -307,13 +307,13 @@ The outer `SBlock` keeps `i` out of the enclosing scope. `continue` (recipe J) w
        pureP (SBlock [body, SWhile cond body])
      };
    ```
-3. `parser.kl:764`: add `    doWhileStmtP stmt,` after `whileStmtP stmt,`.
+3. `parser.kl:917`: add `    doWhileStmtP stmt,` after `whileStmtP stmt,`.
 
 The body runs once, then the loop behaves like `while`.
 
 ### H. Block comments `/* ... */` — `blockcomment/` (parser only)
 
-1. `parser.kl:284`, just above `wsP`:
+1. `parser.kl:388`, just above `wsP`:
    ```
    letrec skipBlockComment start inp =
      match inp {
@@ -333,14 +333,14 @@ The body runs once, then the loop behaves like `while`.
          POk _ rest _ => skipBlockComment inp rest;
        });
    ```
-2. `parser.kl:292`, in `wsP`: change `lineCommentP)));` to `(orP lineCommentP blockCommentP))));`.
+2. `parser.kl:399`, in `wsP`: change `lineCommentP)));` to `(orP lineCommentP blockCommentP))));`.
 
 `advanceInput` keeps line/column correct across newlines inside the comment.
 
 ### I. Comparing strings with `< <= > >=` — `strcompare/`
 
-1. `checker.kl:306–309`: in each of the four lines change `if bothNumbers` to `if bothNumbers || bothStrings`.
-2. `eval.kl:188`, above `delta2`:
+1. `checker.kl:332–335`: in each of the four lines change `if bothNumbers` to `if bothNumbers || bothStrings`.
+2. `eval.kl:204`, above `delta2`:
    ```
    let ordering what a b numTest cmpTest =
      match a {
@@ -348,7 +348,7 @@ The body runs once, then the loop behaves like `while`.
        _ => numbers what a b (fn x y => Ok (VBool (numTest x y)));
      };
    ```
-3. `eval.kl:200–203`: replace the four comparison lines:
+3. `eval.kl:219–222`: replace the four comparison lines:
    ```
        OpLt => ordering what a b (fn x y => x <. y) (fn c => c < 0);
        OpLe => ordering what a b (fn x y => x <=. y) (fn c => c <= 0);
@@ -362,7 +362,7 @@ The body runs once, then the loop behaves like `while`.
 The idea: `break` returns an `Err` *signal* that carries the current store. Blocks, ifs, and sequences already pass `Err` up unchanged, so the signal travels until a `while` catches it. The checker uses a marker binding to know it is inside a loop.
 
 1. `syntax.kl:59`: `| SWhile Expr Stmt` (drop the `;`), then add `  | SBreak` and `  | SContinue;`. In `showStmt` :179 add `SBreak => "(break)";` and `SContinue => "(continue)";`.
-2. `parser.kl:319`: add `"break", "continue"` to `reservedWords`. Above `exprStmtP`:
+2. `parser.kl:439`: add `"break", "continue"` to `reservedWords`. Above `exprStmtP`:
    ```
    let breakStmtP =
      do (bindP) {
@@ -377,9 +377,9 @@ The idea: `break` returns an `Err` *signal* that carries the current store. Bloc
        pureP SContinue
      };
    ```
-   Add `breakStmtP,` and `continueStmtP,` to `statementP` :760.
-3. `checker.kl:33`: add `| OutsideLoop String` (+ `showTypeError`: `OutsideLoop what => str_join [what, " can only appear inside a loop"];`).
-   - `:563` (in `SWhile`): change `checkStmt body env` to `checkStmt body (bindLocal (pushScope env) "%loop" TNull)`. `%loop` can never be a MiniTS name, so there are no clashes.
+   Add `breakStmtP,` and `continueStmtP,` to `statementP` :913.
+3. `checker.kl:43`: add `| OutsideLoop String` (+ `showTypeError`: `OutsideLoop what => str_join [what, " can only appear inside a loop"];`).
+   - `:589` (in `SWhile`): change `checkStmt body env` to `checkStmt body (bindLocal (pushScope env) "%loop" TNull)`. `%loop` can never be a MiniTS name, so there are no clashes.
    - Add these cases to `checkStmt`:
    ```
        SBreak =>
@@ -387,18 +387,18 @@ The idea: `break` returns an `Err` *signal* that carries the current store. Bloc
        SContinue =>
          match lookupType env "%loop" { Some _ => Ok env; None => Err (OutsideLoop "continue"); };
    ```
-4. `eval.kl:35`: `| InvalidRuntimeOperation String` (drop the `;`), then `  | LoopBreak Store` and `  | LoopContinue Store;`. Add both to `showRuntimeError` :151.
-   - `eval.kl:505–508` (`SWhile`'s `loop`): put two cases **before** `Err err => Err err;`:
+4. `eval.kl:47`: `| InvalidRuntimeOperation String` (drop the `;`), then `  | LoopBreak Store` and `  | LoopContinue Store;`. Add both to `showRuntimeError` :167.
+   - `eval.kl:524–527` (`SWhile`'s `loop`): put two cases **before** `Err err => Err err;`:
    ```
                         Err (LoopBreak st2) => Ok (Pair env st2);
                         Err (LoopContinue st2) => loop st2;
    ```
-   - After `loop store;` (:514), add cases to `execStmt`:
+   - After `loop store;` (:533), add cases to `execStmt`:
    ```
        SBreak => Err (LoopBreak store);
        SContinue => Err (LoopContinue store);
    ```
-   - `eval.kl:532`, in `execProgram`, turn a stray signal into a defensive error before `Err err => Err err;`:
+   - `eval.kl:551`, in `execProgram`, turn a stray signal into a defensive error before `Err err => Err err;`:
    ```
            Err (LoopBreak _) => Err (InvalidRuntimeOperation "break outside a loop");
            Err (LoopContinue _) => Err (InvalidRuntimeOperation "continue outside a loop");
@@ -426,11 +426,11 @@ Then at `tests.kl:661` change `(listAppend evalTests defensiveTests))));` to `(l
 
 These follow the same patterns but were not compiled. Use them as a starting point and test them.
 
-- **New escape** (`\0`, `\'`): add a branch in `escapeChar` `parser.kl:392`. Also add it to `escapeText` `syntax.kl:92` if it must print back.
-- **New primitive type** (`undefined`): `TyUndefined` in `syntax.kl:16`, `primitiveTypeP` :446, `reservedWords` :318, `TUndefined` in `checker.kl:9` (+ `typeEq`, `isPrimitive`, `showType`, `resolveType`), `VUndefined` in `eval.kl:11` (+ `primitiveEquals`, `showValue`), and a literal in `primaryP` :573.
-- **`!=`/`==` as synonyms** of `!==`/`===`: in `equalityP` :652 add `binOpP "==" OpEq` *after* `"==="`. In `operatorP` give `"=="` the forbidden `["="]`, and remove the test `"== is not a MiniTS operator"`.
-- **`&&` without short-circuit**: in `eval.kl:316` make `OpAnd`/`OpOr` evaluate both sides like the `_ =>` branch, then combine them.
+- **New escape** (`\0`, `\'`): add a branch in `escapeChar` `parser.kl:526`. Also add it to `escapeText` `syntax.kl:92` if it must print back.
+- **New primitive type** (`undefined`): `TyUndefined` in `syntax.kl:16`, `primitiveTypeP` :585, `reservedWords` :438, `TUndefined` in `checker.kl:19` (+ `typeEq`, `isPrimitive`, `showType`, `resolveType`), `VUndefined` in `eval.kl:21` (+ `primitiveEquals`, `showValue`), and a literal in `primaryP` :719.
+- **`!=`/`==` as synonyms** of `!==`/`===`: in `equalityP` :798 add `binOpP "==" OpEq` *after* `"==="`. In `operatorP` give `"=="` the forbidden `["="]`, and remove the test `"== is not a MiniTS operator"`.
+- **`&&` without short-circuit**: in `eval.kl:335` make `OpAnd`/`OpOr` evaluate both sides like the `_ =>` branch, then combine them.
 - **`let` without an initializer** (defaults to `null`): in `letStmtP`, make `"=" Expr` optional and default to `ENull`. Remove the test `"let requires an initializer"`.
-- **Unary `+`**: in `unaryP` :625 add `mapP (fn _ => OpPlus) (operatorP "+")` (+ `UnOp`, `unOpText`, `EUnary` case, `delta1`).
+- **Unary `+`**: in `unaryP` :771 add `mapP (fn _ => OpPlus) (operatorP "+")` (+ `UnOp`, `unOpText`, `EUnary` case, `delta1`).
 - **Count loop iterations / output log**: add a field to `Store`, for example `Store next cells log` or a counter. Most functions only pattern-match `Store next cells`, so update `allocate`, `storeGet`, `storeSet`, `storeSize`, and `emptyStore`.
 - **Tests runner (pure-hm):** `report` is at `tests.kl:664` and builds an `IO Unit` with `bindIO`. `main` is at `tests.kl:677`. It prints the summary and does not set an exit status.
