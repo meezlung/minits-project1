@@ -16,7 +16,7 @@ The last line of `tests.kl` calls `report allTests 0 0;`. That prints one line p
 PASS  1c factorial loop: n = 1, result = 120
 PASS  1c counter closure: counter = 2, a = 1, b = 2
 ...
-242 passed, 0 failed, 242 total
+256 passed, 0 failed, 256 total
 ```
 
 Any failing test prints as `FAIL  <label>`, and the program then ends with `exit 1`.
@@ -67,7 +67,7 @@ match run "let n = 5; let r = 1; while (n > 1) { r = r * n; n = n - 1; }" {
 - `orP` is ordered choice with full backtracking. This lets arrow functions and parenthesized expressions share the `(` prefix: `arrowP` is tried first, and if it fails, `parenP` starts from the same input. The assignment alternative (`Identifier "=" ...`) backtracks the same way.
 - `manyP` stops if its parser succeeds without consuming input, so repetition can't loop forever.
 - Binary levels use `chainl1`, a left fold, so they are left-associative. Assignment is right-associative because its right-hand side is a full `Expr`. Postfix suffixes are folded in source order.
-- Whitespace and `//` comments are skipped after every token (`lexeme`) and once at the start of the program.
+- Whitespace and `//` comments are skipped after every token (`lexeme`) and once at the start of the program. LF, CR, and CRLF line endings are recognized, including in error positions.
 - Keywords must be followed by an identifier boundary, so `letter` is an identifier. Operators are matched by their longest spelling: `=` won't match the start of `===` or `=>`, and `<` won't match the start of `<=`.
 - Parse errors carry `line:column`. Each reply tracks the *furthest* failure seen, so an error deep inside an abandoned alternative is still reported where it happened.
 - Two rules from the spec text, beyond the bare grammar:
@@ -85,6 +85,7 @@ match run "let n = 5; let r = 1; while (n > 1) { r = r * n; n = n - 1; }" {
 - Closures capture the environment, not the store. Calls allocate fresh parameter locations after the arguments are evaluated. Blocks drop their bindings but keep the store.
 - `&&` and `||` short-circuit. Everything else evaluates left to right and threads the store.
 - Defensive checks return `InvalidRuntimeOperation`, in the order the spec requires: callee shape and arity before the arguments, assignment target before the right-hand side, duplicate declaration before the initializer.
+- Assignment also checks that its target's store cell exists before evaluating the right-hand side. This guards manually supplied inconsistent environments; normal program execution allocates every binding.
 
 ## Assumptions
 
@@ -92,5 +93,5 @@ match run "let n = 5; let r = 1; while (n > 1) { r = r * n; n = n - 1; }" {
 - **No mutually recursive type declarations** (kept from the typed versions). Named fields and parameters are stored as `Pair name thing`, so every type only refers to itself or to earlier types.
 - **Recursion uses plain `let`, as in the func-dynamic labs.** This includes local helpers like `let go ... in`. Mutual recursion is avoided by passing the recursive parser as an argument, as in Lecture 11.
 - **The unit value is written `[]`,** matching how func-dynamic prints `Unit`.
-- **Number literals are built from their digits with `Float` arithmetic.** Literals that overflow to infinity are rejected.
+- **Number literals use KLang's `string_to_float` once after validating their text and finite range.** This preserves Float rounding and subnormal values. An exact overflow bound is checked first because the native conversion raises an error on non-finite input.
 - **MiniTS numbers are KLang `Float`s, so comparisons use the Float operators `<. <=. >. >=.`** (in `eval.kl`'s `delta2` and in `util.kl`'s `floatToText`). KLang's plain `< <= > >=` are Int-only.
