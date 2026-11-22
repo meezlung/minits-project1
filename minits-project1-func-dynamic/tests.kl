@@ -11,6 +11,13 @@ type Test
 # Helpers
 # =====================================================================
 
+# Build long literal fixtures without relying on the MiniTS number parser.
+let repeatText count text =
+  let go remaining acc =
+    if remaining <= 0 then str_join acc else go (remaining - 1) (text :: acc)
+  in
+    go count [];
+
 # globalValue :: String -> String -> Option Value   (run src, read a global)
 let globalValue src name =
   match run src {
@@ -315,6 +322,13 @@ let parserTests = [
   Test "tabs, CR and LF all count as whitespace"
     (parsesTo "let\tx\r\n=\t1;\r\n" "(let x 1)"),
 
+  Test "CR ends a line comment"
+    (numIs "// comment\rlet x = 1;" "x" 1.0),
+  Test "CR-only line endings advance parse error positions"
+    (parseFailsAt "// comment\rlet x = @;" 2 9),
+  Test "CRLF advances the line number only once"
+    (parseFailsAt "// comment\r\nlet x = @;" 2 9),
+
   # --- keywords and identifiers
   Test "keyword-prefix identifier: letter" (parsesTo "let letter = 1;" "(let letter 1)"),
   Test "keyword-prefix identifiers: iffy, whileLoop, nullable, numbers, trueish"
@@ -348,6 +362,26 @@ let parserTests = [
         ";"
       ])),
   Test "a large but finite number literal is accepted" (numIs "let big = 1000000000000000000000;" "big" 1000000000000000000000.0),
+
+  # --- numeric conversion regressions
+  Test "decimal literal is rounded once to the nearest Float"
+    (numIs "let x = 1.0000000000000003;" "x" 1.0000000000000002),
+  Test "halfway decimal rounds to the even Float"
+    (numIs "let x = 1.00000000000000011102230246251565404236316680908203125;" "x" 1.0),
+  Test "long finite decimal does not overflow during conversion"
+    (numIs (str_join ["let x = 1.", repeatText 310 "0", ";"]) "x" 1.0),
+  Test "finite subnormal decimal is preserved"
+    (numIs (str_join ["let x = 0.", repeatText 309 "0", "1;"]) "x" 1.0e-310),
+  Test "smallest subnormal rounds correctly"
+    (numIs (str_join ["let x = 0.", repeatText 323 "0", "5;"]) "x" 5.0e-324),
+  Test "decimal below the subnormal range rounds to zero"
+    (numIs (str_join ["let x = 0.", repeatText 400 "0", "1;"]) "x" 0.0),
+  Test "leading zeros do not make a finite literal overflow"
+    (numIs (str_join ["let x = ", repeatText 400 "0", "1.5;"]) "x" 1.5),
+  Test "large decimal can round to the largest finite Float"
+    (numIs (str_join ["let x = 17976931348623158", repeatText 292 "0", ";"]) "x" 1.7976931348623157e308),
+  Test "overflowing decimal is a parse error"
+    (parseFails (str_join ["let x = 17976931348623159", repeatText 292 "0", ";"])),
 
   # --- precedence and associativity
   Test "multiplication binds tighter than addition" (exprParsesTo "1 + 2 * 3" "(+ 1 (* 2 3))"),
@@ -623,6 +657,16 @@ let evalTests = [
 # =====================================================================
 
 let defensiveTests = [
+  Test "assignment rejects a missing store cell"
+    (match evalExpr (EAssign "x" (num 1.0)) (Env [[Pair "x" 99]]) emptyStore {
+       Err (InvalidRuntimeOperation _) => true;
+       _ => false;
+     }),
+  Test "missing assignment cell is checked before the right-hand side"
+    (match evalExpr (EAssign "x" (EBinary OpDiv (num 1.0) (num 0.0))) (Env [[Pair "x" 99]]) emptyStore {
+       Err (InvalidRuntimeOperation _) => true;
+       _ => false;
+     }),
   Test "unbound variable" (execInvalid [SExpr (EVar "nope")]),
   Test "assignment to an unbound variable" (execInvalid [SExpr (EAssign "nope" (num 1.0))]),
   Test "calling a non-function" (execInvalid [SExpr (ECall (num 1.0) [])]),

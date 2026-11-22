@@ -288,14 +288,19 @@ let evalExpr e env store =
           };
       };
 
-    # E-Assign: the target is looked up before the right side is evaluated
+    # E-Assign: validate the target and its cell before evaluating the RHS.
+    # A missing cell is possible only with manually supplied inconsistent state.
     EAssign x rhs =>
       match lookupLocation env x {
         None => invalidOp (str_concat "assignment to unbound variable " x);
         Some loc =>
-          match evalExpr rhs env store {
-            Err err => Err err;
-            Ok (Pair v store1) => Ok (Pair v (storeSet store1 loc v));
+          match storeGet store loc {
+            None => invalidOp (str_concat "dangling location for " x);
+            Some _ =>
+              match evalExpr rhs env store {
+                Err err => Err err;
+                Ok (Pair v store1) => Ok (Pair v (storeSet store1 loc v));
+              };
           };
       };
 
